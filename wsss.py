@@ -12,13 +12,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from transformers import CLIPSegProcessor, CLIPSegForImageSegmentation
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
-from losses import CollisionCrossEntropyLoss, CDPottsLoss, QuadPottsLoss, BLPottsLoss
+from losses import CollisionCrossEntropyLoss, BLPottsLoss
 from vis import vis_sample_img, vis_training_loss
 
 VOC_CLASSES = {0: "background", 1: "aeroplane", 2: "bicycle", 3: "bird", 4: "boat", 5: "bottle", 6: "bus", 7: "car", 8: "cat", 9: "chair", 10: "cow", 11: "diningtable", 12: "dog", 13: "horse", 14: "motorbike", 15: "person", 16: "potted plant", 17: "sheep", 18: "sofa", 19: "train", 20: "tv/monitor", 255: "ignore"}
 VOC_CLASSES_FLIPPED = {"background": 0, "aeroplane": 1, "bicycle": 2, "bird": 3, "boat": 4, "bottle": 5, "bus": 6, "car": 7, "cat": 8, "chair": 9, "cow": 10, "diningtable": 11, "dog": 12, "horse": 13, "motorbike": 14, "person": 15, "potted plant": 16, "sheep": 17, "sofa": 18, "train": 19, "tv/monitor": 20, "ignore": 255}
 
-NUM_TRAIN_IMAGES = 200
+NUM_TRAIN_IMAGES = 10
 NUM_CLASSES = 21
 BATCH_SIZE = 32
 NUM_EPOCHS = 300
@@ -33,16 +33,17 @@ DIRS = {
     'checkpoints': 'checkpoints', 
     'sam_cache': 'sam_cache',
     'clipseg_cache': 'clipseg_cache',
-    'visualizations': 'visualizations_cce_potts_euclidean'
+    'visualizations': 'visualizations_cce_potts_exponential'
 }
 for dir_name, dir_path in DIRS.items():
     full_path = os.path.join(DIRS['output'], dir_path) if dir_name != 'output' else dir_path
     os.makedirs(full_path, exist_ok=True)
 PATHS = {
     'model_checkpoint': os.path.join(DIRS['output'], DIRS['checkpoints'], 'cce.pt'),
-    'model': os.path.join(DIRS['output'], DIRS['checkpoints'], 'cce_potts_euclidean.pt'),
+    'model': os.path.join(DIRS['output'], DIRS['checkpoints'], 'cce_potts_exponential.pt'),
     'clipseg_pseudolabels': os.path.join(DIRS['output'], DIRS['clipseg_cache'], 'pseudolabels.npy'),
-    'sam_contours': os.path.join(DIRS['output'], DIRS['sam_cache'], 'contours.npy'),
+    'sam_contours_x': os.path.join(DIRS['output'], DIRS['sam_cache'], 'contours_x.npy'),
+    'sam_contours_y': os.path.join(DIRS['output'], DIRS['sam_cache'], 'contours_y.npy'),
     'sam_checkpoint': os.path.join('sam_checkpoint', 'sam_vit_h_4b8939.pth')
 }
 
@@ -80,22 +81,22 @@ def generate_sam_contours(voc_train_dataset):
     model_type = "vit_h"
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint).to(device)
     mask_generator = SamAutomaticMaskGenerator(model=sam)
-    sam_contours = []
+    all_contours_x, all_contours_y = [], []
     for image, target in tqdm(voc_train_dataset):
-        masks = mask_generator.generate(np.array(image))
-        all_contours = np.zeros((image.size[1], image.size[0]), dtype=np.uint8)
+        resized_image = np.array(image.resize((RESIZE_SIZE, RESIZE_SIZE), Image.BILINEAR))
+        masks = mask_generator.generate(resized_image)
+        contours_x = np.zeros((RESIZE_SIZE, RESIZE_SIZE - 1), dtype=bool)
+        contours_y = np.zeros((RESIZE_SIZE - 1, RESIZE_SIZE), dtype=bool)
 
         for mask in masks:
             segmentation = mask['segmentation']
-            contour, _ = cv2.findContours(segmentation.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-            drawn_contour = np.zeros((image.size[1], image.size[0]), dtype=np.uint8)
-            cv2.drawContours(drawn_contour, contour, -1, 255, 1)
-            all_contours = cv2.bitwise_or(all_contours, drawn_contour)
+            contours_x |= np.logical_xor(segmentation[:, :-1], segmentation[:, 1:]) # shape: (H, W-1)
+            contours_y |= np.logical_xor(segmentation[:-1, :], segmentation[1:, :]) # shape: (H-1, W)
 
-        bool_all_contours = cv2.resize(all_contours, (RESIZE_SIZE, RESIZE_SIZE), interpolation=cv2.INTER_LINEAR)
-        bool_all_contours = (bool_all_contours > 0).astype(bool)
-        sam_contours.append(bool_all_contours)
-    np.save(PATHS['sam_contours'], sam_contours)
+        all_contours_x.append(contours_x)
+        all_contours_y.append(contours_y)
+    np.save(PATHS['sam_contours_x'], np.array(all_contours_x))
+    np.save(PATHS['sam_contours_y'], np.array(all_contours_y))
     print("All SAM contours generated.")
 
 class CustomVOCSegmentation(Dataset):
@@ -107,7 +108,8 @@ class CustomVOCSegmentation(Dataset):
             transforms.Resize((RESIZE_SIZE, RESIZE_SIZE)),
         ])
         self.pseudolabel_logits_arr = np.load(PATHS['clipseg_pseudolabels'])
-        self.sam_contours = np.load(PATHS['sam_contours'])
+        self.sam_contours_x_arr = np.load(PATHS['sam_contours_x'])
+        self.sam_contours_y_arr = np.load(PATHS['sam_contours_y'])
 
     def __len__(self):
         return len(self.dataset)
@@ -116,9 +118,10 @@ class CustomVOCSegmentation(Dataset):
         image, _ = self.dataset[idx]
         transformed_image = self.transform(image)
         pseudolabel_logits = torch.from_numpy(self.pseudolabel_logits_arr[idx])
-        sam_contour = transforms.ToTensor()(self.sam_contours[idx]).squeeze()
+        sam_contours_x = transforms.ToTensor()(self.sam_contours_x_arr[idx]).squeeze()
+        sam_contours_y = transforms.ToTensor()(self.sam_contours_y_arr[idx]).squeeze()
 
-        return transformed_image, pseudolabel_logits, sam_contour
+        return transformed_image, pseudolabel_logits, sam_contours_x, sam_contours_y
 
 def main():
     voc_train_dataset = datasets.VOCSegmentation(
@@ -164,11 +167,12 @@ def main():
         running_total_loss = 0.0
         running_cce_main = 0.0
         running_potts_main = 0.0
-        for i, (transformed_images, pseudolabel_logits_batch, sam_contours) in enumerate(train_loader):
+        for i, (transformed_images, pseudolabel_logits_batch, sam_contours_x_batch, sam_contours_y_batch) in enumerate(train_loader):
             transformed_images = transformed_images.to(device)
             pseudolabel_logits_batch = pseudolabel_logits_batch.to(device)
-            sam_contours = sam_contours.to(device)
-            
+            sam_contours_x_batch = sam_contours_x_batch.to(device)
+            sam_contours_y_batch = sam_contours_y_batch.to(device)
+
             optimizer.zero_grad()
             outputs = deeplabv3(transformed_images)
             main_logits = outputs['out']
@@ -177,8 +181,8 @@ def main():
             cce_loss_main = CollisionCrossEntropyLoss(main_logits, pseudolabel_logits_batch)
 
             # Pairwise potential
-            potts_loss_main = BLPottsLoss(main_logits, sam_contours, distance_transform='euclidean') # torch.tensor(0.0, device=device)
-            
+            potts_loss_main = BLPottsLoss(main_logits, sam_contours_x_batch, sam_contours_y_batch, distance_transform='exponential') # torch.tensor(0.0, device=device)
+
             total_loss = cce_loss_main + potts_loss_main
 
             total_loss.backward()

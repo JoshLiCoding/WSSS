@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
+from losses import calculate_pairwise_affinity
 
 def visualize_soft_probabilities(logits):
     probabilities = logits.softmax(dim=0).detach().numpy()
@@ -27,11 +28,11 @@ def visualize_soft_probabilities(logits):
     soft_vis_image = Image.fromarray(soft_vis)
     return soft_vis_image
 
-def vis_sample_img(voc_train_dataset, train_dataset, deeplabv3, index=0, output_dir='.'):
+def vis_sample_img(voc_train_dataset, train_dataset, deeplabv3, index, output_dir='.'):
     device = next(deeplabv3.parameters()).device
     
     img, gt_mask = voc_train_dataset[index]
-    transformed_img, pseudolabel_logits, sam_contour = train_dataset[index]
+    transformed_img, pseudolabel_logits, sam_contours_x, sam_contours_y = train_dataset[index]
     voc_palette = gt_mask.getpalette()
     
     psuedolabel_vis = pseudolabel_logits.softmax(0).argmax(0).numpy().astype(np.uint8)
@@ -47,7 +48,7 @@ def vis_sample_img(voc_train_dataset, train_dataset, deeplabv3, index=0, output_
     output_vis = Image.fromarray(output_vis)
     output_vis.putpalette(voc_palette)
     
-    fig, axes = plt.subplots(4, 3, figsize=(12, 18))
+    fig, axes = plt.subplots(5, 2, figsize=(8, 20))
     
     axes[0, 0].imshow(img)
     axes[0, 0].set_title('Original Image')
@@ -56,31 +57,28 @@ def vis_sample_img(voc_train_dataset, train_dataset, deeplabv3, index=0, output_
     axes[0, 1].set_title('GT mask')
 
     axes[1, 0].imshow(visualize_soft_probabilities(pseudolabel_logits))
-    axes[1, 0].set_title('Soft Pseudolabel')
+    axes[1, 0].set_title('Soft CLIPSeg Pseudolabel')
 
     axes[1, 1].imshow(psuedolabel_vis)
-    axes[1, 1].set_title('Hard Pseudolabel')
+    axes[1, 1].set_title('Hard CLIPSeg Pseudolabel')
 
-    axes[1, 2].imshow(sam_contour, cmap='grey')
-    axes[1, 2].set_title('SAM contour')
-    
-    axes[2, 0].imshow(visualize_soft_probabilities(output.cpu()))
-    axes[2, 0].set_title('Soft Output')
-    
-    axes[2, 1].imshow(output_vis)
-    axes[2, 1].set_title('Hard Output')
-    
-    axes[3, 0].imshow(sam_contour, cmap='grey')
-    axes[3, 0].imshow(visualize_soft_probabilities(pseudolabel_logits), alpha=0.8)
-    axes[3, 0].set_title('Overlayed Soft Pseduolabel')
+    axes[2, 0].imshow(sam_contours_x, cmap='grey')
+    axes[2, 0].set_title('SAM Contours (horizontal)')
 
-    axes[3, 1].imshow(sam_contour, cmap='grey')
-    axes[3, 1].imshow(visualize_soft_probabilities(output.cpu()), alpha=0.8)
-    axes[3, 1].set_title('Overlayed Soft Output')
+    axes[2, 1].imshow(sam_contours_y, cmap='grey')
+    axes[2, 1].set_title('SAM Contours (vertical)')
 
-    axes[0, 2].remove()
-    axes[2, 2].remove()
-    axes[3, 2].remove()
+    axes[3, 0].imshow(calculate_pairwise_affinity(sam_contours_x.unsqueeze(0), 'exponential').squeeze(), cmap='viridis')
+    axes[3, 0].set_title('SAM Distance Field (horizontal)')
+
+    axes[3, 1].imshow(calculate_pairwise_affinity(sam_contours_y.unsqueeze(0), 'exponential').squeeze(), cmap='viridis')
+    axes[3, 1].set_title('SAM Distance Field (vertical)')
+
+    axes[4, 0].imshow(visualize_soft_probabilities(output.cpu()))
+    axes[4, 0].set_title('Soft Deeplab Output')
+
+    axes[4, 1].imshow(output_vis)
+    axes[4, 1].set_title('Hard Deeplab Output')
     
     plt.tight_layout()
     save_path = os.path.join(output_dir, f'visualization_sample_{index}.png')
