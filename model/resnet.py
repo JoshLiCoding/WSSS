@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torchvision.models.utils import load_state_dict_from_url
+from torch.hub import load_state_dict_from_url
 
 def conv1x1(in_planes, out_planes, stride=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
@@ -58,6 +58,7 @@ class ResNet(nn.Module):
         self.dilation = 1
         self.groups = 1
         self.base_width = 64
+        self.num_classes = 1000
         self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = self._norm_layer(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
@@ -67,7 +68,7 @@ class ResNet(nn.Module):
         self.layer3 = self._make_layer(Bottleneck, 256, layers[2], stride=2, dilate=replace_stride_with_dilation[1])
         self.layer4 = self._make_layer(Bottleneck, 512, layers[3], stride=2, dilate=replace_stride_with_dilation[2])
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(512 * Bottleneck.expansion, num_classes)
+        self.fc = nn.Linear(512 * Bottleneck.expansion, self.num_classes)
 
         # weight initialization
         for m in self.modules():

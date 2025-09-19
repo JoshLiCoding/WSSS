@@ -28,7 +28,7 @@ def visualize_soft_probabilities(logits):
     soft_vis_image = Image.fromarray(soft_vis)
     return soft_vis_image
 
-def vis_sample_img(voc_train_dataset, train_dataset, deeplabv3, index, output_dir='.'):
+def vis_sample_img(voc_train_dataset, train_dataset, deeplabv3, index, distance_transform, output_dir='.'):
     device = next(deeplabv3.parameters()).device
     
     img, gt_mask = voc_train_dataset[index]
@@ -68,10 +68,10 @@ def vis_sample_img(voc_train_dataset, train_dataset, deeplabv3, index, output_di
     axes[2, 1].imshow(sam_contours_y, cmap='grey')
     axes[2, 1].set_title('SAM Contours (vertical)')
 
-    axes[3, 0].imshow(calculate_pairwise_affinity(sam_contours_x.unsqueeze(0), 'exponential').squeeze(), cmap='viridis')
+    axes[3, 0].imshow(calculate_pairwise_affinity(sam_contours_x.unsqueeze(0), distance_transform).squeeze(), cmap='viridis')
     axes[3, 0].set_title('SAM Distance Field (horizontal)')
 
-    axes[3, 1].imshow(calculate_pairwise_affinity(sam_contours_y.unsqueeze(0), 'exponential').squeeze(), cmap='viridis')
+    axes[3, 1].imshow(calculate_pairwise_affinity(sam_contours_y.unsqueeze(0), distance_transform).squeeze(), cmap='viridis')
     axes[3, 1].set_title('SAM Distance Field (vertical)')
 
     axes[4, 0].imshow(visualize_soft_probabilities(output.cpu()))
