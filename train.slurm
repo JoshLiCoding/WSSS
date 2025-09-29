@@ -2,8 +2,8 @@
 
 # Set resource requirements: Queues are limited to seven day allocations
 # Time format: HH:MM:SS
-#SBATCH --time=8:00:00
-#SBATCH --mem=20GB
+#SBATCH --time=12:00:00
+#SBATCH --mem=50GB
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 

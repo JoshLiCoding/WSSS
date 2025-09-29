@@ -21,7 +21,7 @@ from vis import vis_train_sample_img, vis_val_sample_img, vis_train_loss, vis_va
 VOC_CLASSES = {0: "background", 1: "aeroplane", 2: "bicycle", 3: "bird", 4: "boat", 5: "bottle", 6: "bus", 7: "car", 8: "cat", 9: "chair", 10: "cow", 11: "diningtable", 12: "dog", 13: "horse", 14: "motorbike", 15: "person", 16: "potted plant", 17: "sheep", 18: "sofa", 19: "train", 20: "tv/monitor", 255: "ignore"}
 VOC_CLASSES_FLIPPED = {"background": 0, "aeroplane": 1, "bicycle": 2, "bird": 3, "boat": 4, "bottle": 5, "bus": 6, "car": 7, "cat": 8, "chair": 9, "cow": 10, "diningtable": 11, "dog": 12, "horse": 13, "motorbike": 14, "person": 15, "potted plant": 16, "sheep": 17, "sofa": 18, "train": 19, "tv/monitor": 20, "ignore": 255}
 
-NUM_TRAIN_IMAGES = 500
+# NUM_TRAIN_IMAGES = 200
 NUM_CLASSES = 21
 BATCH_SIZE = 16
 NUM_EPOCHS = 200
@@ -30,7 +30,7 @@ MOMENTUM = 0.9
 IGNORE_INDEX = 255
 RESIZE_SIZE = 352
 VALIDATION_INTERVAL = 20
-DISTANCE_TRANSFORM = 'euclidean'
+DISTANCE_TRANSFORM = None
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 DIRS = {
@@ -38,14 +38,14 @@ DIRS = {
     'checkpoints': 'checkpoints', 
     'sam_cache': 'sam_cache',
     'clipseg_cache': 'clipseg_cache',
-    'visualizations': f'vis_{NUM_EPOCHS}epochs_cce_{DISTANCE_TRANSFORM}'
+    'visualizations': f'vis_{NUM_EPOCHS}epochs_ce_init'
 }
 for dir_name, dir_path in DIRS.items():
     full_path = os.path.join(DIRS['output'], dir_path) if dir_name != 'output' else dir_path
     os.makedirs(full_path, exist_ok=True)
 PATHS = {
-    'model_checkpoint': os.path.join(DIRS['output'], DIRS['checkpoints'], 'cce.pt'),
-    'model': os.path.join(DIRS['output'], DIRS['checkpoints'], f'cce_{DISTANCE_TRANSFORM}.pt'),
+    'model_checkpoint': os.path.join(DIRS['output'], DIRS['checkpoints'], 'none.pt'),
+    'model': os.path.join(DIRS['output'], DIRS['checkpoints'], f'ce.pt'),
     'clipseg_pseudolabels': os.path.join(DIRS['output'], DIRS['clipseg_cache'], 'pseudolabels.npy'),
     'sam_contours_x': os.path.join(DIRS['output'], DIRS['sam_cache'], 'contours_x.npy'),
     'sam_contours_y': os.path.join(DIRS['output'], DIRS['sam_cache'], 'contours_y.npy'),
@@ -110,12 +110,13 @@ def main():
     voc_val_dataset = datasets.VOCSegmentation(
         '.',
         image_set='val',
-        download=True
+        download=False
     )
 
-    if len(voc_train_dataset) > NUM_TRAIN_IMAGES:
-        voc_train_dataset = Subset(voc_train_dataset, range(NUM_TRAIN_IMAGES))
-        print(f"Limiting training to the first {NUM_TRAIN_IMAGES} images.")
+    # if len(voc_train_dataset) > NUM_TRAIN_IMAGES:
+    #     voc_train_dataset = Subset(voc_train_dataset, range(NUM_TRAIN_IMAGES))
+    #     print(f"Limiting training to the first {NUM_TRAIN_IMAGES} images.")
+    print(f"Training on {len(voc_train_dataset)} images.")
 
     # generate_pseudolabels(voc_train_dataset)
     # generate_sam_contours(voc_train_dataset)
@@ -126,13 +127,7 @@ def main():
         batch_size=BATCH_SIZE,
         shuffle=True,
     )
-    
     val_dataset = CustomVOCSegmentationVal(voc_val_dataset)
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-    )
 
     deeplabv3plus = deeplabv3plus_resnet101().to(device)
     optimizer = optim.Adam(deeplabv3plus.parameters(), lr=LEARNING_RATE)
@@ -171,10 +166,10 @@ def main():
             outputs = deeplabv3plus(transformed_images)
             
             # unary potential
-            cce_loss_main = CollisionCrossEntropyLoss(outputs, pseudolabel_logits_batch) # CrossEntropyLoss(outputs, pseudolabel_logits_batch)
+            cce_loss_main = CrossEntropyLoss(outputs, pseudolabel_logits_batch) # CollisionCrossEntropyLoss(outputs, pseudolabel_logits_batch)
 
             # pairwise potential
-            potts_loss_main = BLPottsLoss(outputs, sam_contours_x_batch, sam_contours_y_batch, distance_transform=DISTANCE_TRANSFORM) # torch.tensor(0.0, device=device)
+            potts_loss_main = torch.tensor(0.0, device=device) # BLPottsLoss(outputs, sam_contours_x_batch, sam_contours_y_batch, distance_transform=DISTANCE_TRANSFORM)
 
             total_loss = cce_loss_main + potts_loss_main
 
@@ -211,13 +206,13 @@ def main():
             union_counts = np.zeros(NUM_CLASSES)
             
             with torch.no_grad():
-                for val_images, val_targets in val_loader:
-                    val_images = val_images.to(device)
-                    val_targets = val_targets.to(device)
-                    
-                    val_outputs = deeplabv3plus(val_images)
-                    update_miou(val_outputs, val_targets, intersection_counts, union_counts, NUM_CLASSES, IGNORE_INDEX)
-            
+                for val_transformed_image, val_target in val_dataset:
+                    val_transformed_image = val_transformed_image.to(device)
+                    val_target = val_target.to(device)
+
+                    val_outputs = deeplabv3plus(val_transformed_image.unsqueeze(0))
+                    update_miou(val_outputs, val_target.unsqueeze(0), intersection_counts, union_counts, NUM_CLASSES, IGNORE_INDEX)
+
             ious = []
             for cls in range(NUM_CLASSES):
                 if cls == IGNORE_INDEX:
@@ -252,7 +247,7 @@ def main():
     
     # Load best model for inference/visualization
     if os.path.exists(PATHS['model']):
-        best_checkpoint = torch.load(PATHS['model'], map_location=device)
+        best_checkpoint = torch.load(PATHS['model'], map_location=device, weights_only=False)
         deeplabv3plus.load_state_dict(best_checkpoint['model_state_dict'])
         print(f"Best model loaded successfully! Final validation mIoU: {best_miou:.4f}")
     

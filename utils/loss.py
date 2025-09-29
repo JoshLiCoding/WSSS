@@ -24,21 +24,33 @@ def calculate_pairwise_affinity(sam_contour, transform_type):
     return w
 
 def CrossEntropyLoss(logits, target_logits):
-    target_prob = F.softmax(target_logits, dim=1)
+    """
+    For each pixel, sets the largest value in the C channel of target_logits to 1 (others to 0),
+    then computes the cross-entropy between logits and this one-hot mask.
+    """
+    max_idx = torch.argmax(target_logits, dim=1, keepdim=True)  # (B, 1, H, W)
+    target_one_hot = torch.zeros_like(target_logits)
+    target_one_hot.scatter_(1, max_idx, 1)
     log_prob = F.log_softmax(logits, dim=1)
-    loss = (-torch.sum(target_prob * log_prob, dim=1)).mean()
-    
+    loss = -(target_one_hot * log_prob).sum(dim=1).mean()
     return loss
 
 def CollisionCrossEntropyLoss(logits, target_logits):
+    """
+    See "Soft Self-labeling and Potts Relaxations for Weakly-Supervised Segmentation" paper.
+    CCE loss is robust to pseudo-label uncertainty without requiring hard labels.
+    """
     target_log_prob = F.log_softmax(target_logits, dim=1)
     log_prob = F.log_softmax(logits, dim=1)
     loss = (-torch.logsumexp(log_prob + target_log_prob, dim=1)).mean()
     
     return loss
 
-# Bi-linear
 def BLPottsLoss(logits, sam_contours_x, sam_contours_y, distance_transform, weighting=1.0):
+    """
+    See "Soft Self-labeling and Potts Relaxations for Weakly-Supervised Segmentation" paper.
+    Bi-linear pairwise loss encourages hard assignment between neighboring pixels.
+    """
     w_x = calculate_pairwise_affinity(sam_contours_x, distance_transform)
     w_y = calculate_pairwise_affinity(sam_contours_y, distance_transform)
 

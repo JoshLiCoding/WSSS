@@ -42,5 +42,5 @@ class CustomVOCSegmentationVal(Dataset):
         def __getitem__(self, idx):
             image, target = self.dataset[idx]
             transformed_image = transform(image)
-            target = torch.from_numpy(target)
+            target = torch.from_numpy(np.array(target))
             return transformed_image, target
