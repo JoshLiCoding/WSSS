@@ -23,6 +23,13 @@ def calculate_pairwise_affinity(sam_contour, transform_type):
         w = torch.from_numpy(w).to(dtype=torch.float32, device=device)
     return w
 
+def CrossEntropyLoss(logits, target_logits):
+    target_prob = F.softmax(target_logits, dim=1)
+    log_prob = F.log_softmax(logits, dim=1)
+    loss = (-torch.sum(target_prob * log_prob, dim=1)).mean()
+    
+    return loss
+
 def CollisionCrossEntropyLoss(logits, target_logits):
     target_log_prob = F.log_softmax(target_logits, dim=1)
     log_prob = F.log_softmax(logits, dim=1)
@@ -34,6 +41,11 @@ def CollisionCrossEntropyLoss(logits, target_logits):
 def BLPottsLoss(logits, sam_contours_x, sam_contours_y, distance_transform, weighting=1.0):
     w_x = calculate_pairwise_affinity(sam_contours_x, distance_transform)
     w_y = calculate_pairwise_affinity(sam_contours_y, distance_transform)
+
+    if distance_transform == 'euclidean':
+        weighting = 0.1
+    elif distance_transform == 'exponential':
+        weighting = 0.001
 
     prob = torch.softmax(logits, dim=1)
     

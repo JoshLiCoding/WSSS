@@ -118,6 +118,7 @@ class ResNet(nn.Module):
 
 def ResNet101(replace_stride_with_dilation):
     model = ResNet([3, 4, 23, 3], replace_stride_with_dilation)
-    state_dict = load_state_dict_from_url('https://download.pytorch.org/models/resnet101-5d3b4d8f.pth', progress=True)
+    state_dict = load_state_dict_from_url('https://download.pytorch.org/models/resnet101-5d3b4d8f.pth', progress=False)
     model.load_state_dict(state_dict)
+    print("Loaded pretrained ResNet101 weights")
     return model
