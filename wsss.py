@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
-from torchvision import datasets
 from PIL import Image
 import cv2
 from tqdm import tqdm
@@ -13,7 +12,8 @@ from transformers import CLIPSegProcessor, CLIPSegForImageSegmentation
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
 from model.deeplab import deeplabv3plus_resnet101
-from utils.dataset import CustomVOCSegmentationTrain, CustomVOCSegmentationVal
+from model.scheduler import PolyLR
+from utils.dataset import VOCSegmentation, CustomVOCSegmentationTrain, CustomVOCSegmentationVal
 from utils.loss import CrossEntropyLoss, CollisionCrossEntropyLoss, BLPottsLoss
 from utils.metrics import update_miou
 from vis import vis_train_sample_img, vis_val_sample_img, vis_train_loss, vis_val_loss
@@ -26,6 +26,7 @@ NUM_CLASSES = 21
 BATCH_SIZE = 16
 NUM_EPOCHS = 200
 LEARNING_RATE = 0.01
+WEIGHT_DECAY = 1e-4
 MOMENTUM = 0.9
 IGNORE_INDEX = 255
 RESIZE_SIZE = 352
@@ -38,17 +39,17 @@ DIRS = {
     'checkpoints': 'checkpoints', 
     'sam_cache': 'sam_cache',
     'clipseg_cache': 'clipseg_cache',
-    'visualizations': f'vis_{NUM_EPOCHS}epochs_ce_init'
+    'visualizations': f'vis_{NUM_EPOCHS}epochs_cce_init_1'
 }
 for dir_name, dir_path in DIRS.items():
     full_path = os.path.join(DIRS['output'], dir_path) if dir_name != 'output' else dir_path
     os.makedirs(full_path, exist_ok=True)
 PATHS = {
     'model_checkpoint': os.path.join(DIRS['output'], DIRS['checkpoints'], 'none.pt'),
-    'model': os.path.join(DIRS['output'], DIRS['checkpoints'], f'ce.pt'),
-    'clipseg_pseudolabels': os.path.join(DIRS['output'], DIRS['clipseg_cache'], 'pseudolabels.npy'),
-    'sam_contours_x': os.path.join(DIRS['output'], DIRS['sam_cache'], 'contours_x.npy'),
-    'sam_contours_y': os.path.join(DIRS['output'], DIRS['sam_cache'], 'contours_y.npy'),
+    'model': os.path.join(DIRS['output'], DIRS['checkpoints'], f'cce_1.pt'),
+    'clipseg_pseudolabels': os.path.join(DIRS['output'], DIRS['clipseg_cache'], 'pseudolabels_aug.npy'),
+    'sam_contours_x': os.path.join(DIRS['output'], DIRS['sam_cache'], 'contours_x_aug.npy'),
+    'sam_contours_y': os.path.join(DIRS['output'], DIRS['sam_cache'], 'contours_y_aug.npy'),
     'sam_checkpoint': os.path.join('sam_checkpoint', 'sam_vit_h_4b8939.pth')
 }
 
@@ -102,12 +103,13 @@ def generate_sam_contours(voc_train_dataset):
     print("All SAM contours generated.")
 
 def main():
-    voc_train_dataset = datasets.VOCSegmentation(
+    # augmented VOC train set
+    voc_train_dataset = VOCSegmentation(
         '.',
         image_set='train',
         download=False
     )
-    voc_val_dataset = datasets.VOCSegmentation(
+    voc_val_dataset = VOCSegmentation(
         '.',
         image_set='val',
         download=False
@@ -118,8 +120,8 @@ def main():
     #     print(f"Limiting training to the first {NUM_TRAIN_IMAGES} images.")
     print(f"Training on {len(voc_train_dataset)} images.")
 
-    # generate_pseudolabels(voc_train_dataset)
-    # generate_sam_contours(voc_train_dataset)
+    generate_pseudolabels(voc_train_dataset)
+    generate_sam_contours(voc_train_dataset)
 
     train_dataset = CustomVOCSegmentationTrain(voc_train_dataset, PATHS)
     train_loader = DataLoader(
@@ -130,13 +132,18 @@ def main():
     val_dataset = CustomVOCSegmentationVal(voc_val_dataset)
 
     deeplabv3plus = deeplabv3plus_resnet101().to(device)
-    optimizer = optim.Adam(deeplabv3plus.parameters(), lr=LEARNING_RATE)
+    optimizer = torch.optim.SGD(params=[
+        {'params': deeplabv3plus.backbone.parameters(), 'lr': 0.1 * LEARNING_RATE},
+        {'params': deeplabv3plus.classifier.parameters(), 'lr': LEARNING_RATE},
+    ], lr=LEARNING_RATE, momentum=0.9, weight_decay=WEIGHT_DECAY)
+    scheduler = PolyLR(optimizer, NUM_EPOCHS * len(train_loader), power=0.9)
 
     if os.path.exists(PATHS['model_checkpoint']):
         print(f"Loading checkpoint from {PATHS['model_checkpoint']}...")
         checkpoint = torch.load(PATHS['model_checkpoint'], map_location=device)
         deeplabv3plus.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         print(f"Resuming training")
     else:
         print("No checkpoint found, starting training from epoch 0.")
@@ -166,8 +173,7 @@ def main():
             outputs = deeplabv3plus(transformed_images)
             
             # unary potential
-            cce_loss_main = CrossEntropyLoss(outputs, pseudolabel_logits_batch) # CollisionCrossEntropyLoss(outputs, pseudolabel_logits_batch)
-
+            cce_loss_main = CollisionCrossEntropyLoss(outputs, pseudolabel_logits_batch) # CrossEntropyLoss(outputs, pseudolabel_logits_batch)
             # pairwise potential
             potts_loss_main = torch.tensor(0.0, device=device) # BLPottsLoss(outputs, sam_contours_x_batch, sam_contours_y_batch, distance_transform=DISTANCE_TRANSFORM)
 
@@ -175,6 +181,7 @@ def main():
 
             total_loss.backward()
             optimizer.step()
+            scheduler.step()
 
             running_total_loss += total_loss.item()
             running_cce_main += cce_loss_main.item()
@@ -236,6 +243,7 @@ def main():
                     'epoch': epoch,
                     'model_state_dict': deeplabv3plus.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
                     'total_loss': epoch_total_losses[-1],
                     'cce_main_loss': epoch_cce_main_losses[-1],
                     'potts_main_loss': epoch_potts_main_losses[-1],
@@ -253,9 +261,9 @@ def main():
     
     # generate visualizations for all training images
     vis_output_dir = os.path.join(DIRS['output'], DIRS['visualizations'])
-    for i in range(0, len(voc_train_dataset), 100):
+    for i in range(0, len(voc_train_dataset), 200):
         vis_train_sample_img(voc_train_dataset, train_dataset, deeplabv3plus, i, DISTANCE_TRANSFORM, vis_output_dir)
-    for i in range(0, len(voc_val_dataset), 100):
+    for i in range(0, len(voc_val_dataset), 50):
         vis_val_sample_img(voc_val_dataset, val_dataset, deeplabv3plus, i, vis_output_dir)
     vis_train_loss(NUM_EPOCHS, epoch_total_losses, epoch_cce_main_losses, epoch_potts_main_losses, vis_output_dir)
     vis_val_loss(NUM_EPOCHS, validation_mious, validation_epochs, vis_output_dir)

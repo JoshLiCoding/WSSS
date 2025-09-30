@@ -33,11 +33,12 @@ def vis_train_sample_img(voc_train_dataset, train_dataset, deeplabv3, index, dis
     
     img, gt_mask = voc_train_dataset[index]
     transformed_img, pseudolabel_logits, sam_contours_x, sam_contours_y = train_dataset[index]
-    voc_palette = gt_mask.getpalette()
     
+    gt_mask = voc_train_dataset.decode_target(gt_mask)
+
     psuedolabel_vis = pseudolabel_logits.softmax(0).argmax(0).numpy().astype(np.uint8)
     psuedolabel_vis = Image.fromarray(psuedolabel_vis)
-    psuedolabel_vis.putpalette(voc_palette)
+    psuedolabel_vis = voc_train_dataset.decode_target(psuedolabel_vis)
     
     deeplabv3.eval()
     transformed_img = transformed_img.unsqueeze(0).to(device)
@@ -48,7 +49,7 @@ def vis_train_sample_img(voc_train_dataset, train_dataset, deeplabv3, index, dis
 
     output_vis = output.cpu().softmax(0).argmax(0).numpy().astype(np.uint8)
     output_vis = Image.fromarray(output_vis)
-    output_vis.putpalette(voc_palette)
+    output_vis = voc_train_dataset.decode_target(output_vis)
     
     fig, axes = plt.subplots(6, 2, figsize=(8, 24))
     
@@ -106,7 +107,8 @@ def vis_val_sample_img(voc_val_dataset, val_dataset, deeplabv3, index, output_di
     
     img, gt_mask = voc_val_dataset[index]
     transformed_img, _ = val_dataset[index]
-    voc_palette = gt_mask.getpalette()
+
+    gt_mask = voc_val_dataset.decode_target(gt_mask)
     
     deeplabv3.eval()
     transformed_img = transformed_img.unsqueeze(0).to(device)
@@ -117,7 +119,7 @@ def vis_val_sample_img(voc_val_dataset, val_dataset, deeplabv3, index, output_di
 
     output_vis = output.cpu().softmax(0).argmax(0).numpy().astype(np.uint8)
     output_vis = Image.fromarray(output_vis)
-    output_vis.putpalette(voc_palette)
+    output_vis = voc_val_dataset.decode_target(output_vis)
     
     # Resize Deeplab output to original image size
     output_resized = output.cpu().unsqueeze(0)
@@ -126,7 +128,7 @@ def vis_val_sample_img(voc_val_dataset, val_dataset, deeplabv3, index, output_di
     )[0]
     output_resized_vis = output_resized.softmax(0).argmax(0).numpy().astype(np.uint8)
     output_resized_vis = Image.fromarray(output_resized_vis)
-    output_resized_vis.putpalette(voc_palette)
+    output_resized_vis = voc_val_dataset.decode_target(output_resized_vis)
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
     axes[0, 0].imshow(img)
