@@ -24,13 +24,13 @@ VOC_CLASSES_FLIPPED = {"background": 0, "aeroplane": 1, "bicycle": 2, "bird": 3,
 # NUM_TRAIN_IMAGES = 200
 NUM_CLASSES = 21
 BATCH_SIZE = 16
-NUM_EPOCHS = 200
+NUM_EPOCHS = 100
 LEARNING_RATE = 0.01
 WEIGHT_DECAY = 1e-4
 MOMENTUM = 0.9
 IGNORE_INDEX = 255
 RESIZE_SIZE = 352
-VALIDATION_INTERVAL = 20
+VALIDATION_INTERVAL = 10
 DISTANCE_TRANSFORM = None
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -39,15 +39,14 @@ DIRS = {
     'checkpoints': 'checkpoints', 
     'sam_cache': 'sam_cache',
     'clipseg_cache': 'clipseg_cache',
-    'visualizations': f'vis_{NUM_EPOCHS}epochs_cce_init_1'
+    'visualizations': f'vis_{NUM_EPOCHS}epochs_ce_init_1'
 }
 for dir_name, dir_path in DIRS.items():
     full_path = os.path.join(DIRS['output'], dir_path) if dir_name != 'output' else dir_path
     os.makedirs(full_path, exist_ok=True)
 PATHS = {
     'model_checkpoint': os.path.join(DIRS['output'], DIRS['checkpoints'], 'none.pt'),
-    'model': os.path.join(DIRS['output'], DIRS['checkpoints'], f'cce_1.pt'),
-    'clipseg_pseudolabels': os.path.join(DIRS['output'], DIRS['clipseg_cache'], 'pseudolabels_aug.npy'),
+    'model': os.path.join(DIRS['output'], DIRS['checkpoints'], f'ce_1.pt'),
     'sam_contours_x': os.path.join(DIRS['output'], DIRS['sam_cache'], 'contours_x_aug.npy'),
     'sam_contours_y': os.path.join(DIRS['output'], DIRS['sam_cache'], 'contours_y_aug.npy'),
     'sam_checkpoint': os.path.join('sam_checkpoint', 'sam_vit_h_4b8939.pth')
@@ -56,8 +55,7 @@ PATHS = {
 def generate_pseudolabels(voc_train_dataset):
     clipseg_processor = CLIPSegProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
     clipseg_model = CLIPSegForImageSegmentation.from_pretrained("CIDAS/clipseg-rd64-refined").to(device)
-    pseudolabel_logits_arr = []
-    for image, target in tqdm(voc_train_dataset, desc="Generating CLIPSeg pseudolabels"):
+    for idx, (image, target) in enumerate(tqdm(voc_train_dataset, desc="Generating CLIPSeg pseudolabels")):
         tags = [VOC_CLASSES[i] for i in np.unique(target)]
         if "ignore" in tags:
             tags.remove("ignore")
@@ -69,15 +67,14 @@ def generate_pseudolabels(voc_train_dataset):
             outputs = clipseg_model(**inputs)
 
         preds = outputs.logits # preds have size (# tags, 352, 352)
-        
         full_preds = torch.full((NUM_CLASSES, RESIZE_SIZE, RESIZE_SIZE), -1e9, dtype=preds.dtype, device=device)
         for i, tag in enumerate(tags):
             voc_id = VOC_CLASSES_FLIPPED.get(tag)
             full_preds[voc_id] = preds[i]
 
-        pseudolabel_logits_arr.append(full_preds.detach().cpu().numpy())
-    np.save(PATHS['clipseg_pseudolabels'], pseudolabel_logits_arr)
-    print("All pseudolabels generated.")
+        # Save each pseudolabel as a separate .npy file
+        np.save(os.path.join(DIRS['clipseg_cache'], f"pseudolabel_{idx}.npy"), full_preds.detach().cpu().numpy())
+    print(f"All pseudolabels saved individually to {DIRS['clipseg_cache']}.")
 
 def generate_sam_contours(voc_train_dataset):
     sam_checkpoint = PATHS['sam_checkpoint']
@@ -121,7 +118,7 @@ def main():
     print(f"Training on {len(voc_train_dataset)} images.")
 
     generate_pseudolabels(voc_train_dataset)
-    generate_sam_contours(voc_train_dataset)
+    # generate_sam_contours(voc_train_dataset)
 
     train_dataset = CustomVOCSegmentationTrain(voc_train_dataset, PATHS)
     train_loader = DataLoader(

@@ -139,7 +139,7 @@ class VOCSegmentation(data.Dataset):
 class CustomVOCSegmentationTrain(Dataset):
     def __init__(self, dataset, paths):
         self.dataset = dataset
-        self.pseudolabel_logits_arr = np.load(paths['clipseg_pseudolabels'])
+        self.pseudolabel_logits_dir = paths['clipseg_cache']
         self.sam_contours_x_arr = np.load(paths['sam_contours_x'])
         self.sam_contours_y_arr = np.load(paths['sam_contours_y'])
 
@@ -149,7 +149,7 @@ class CustomVOCSegmentationTrain(Dataset):
     def __getitem__(self, idx):
         image, _ = self.dataset[idx]
         transformed_image = train_transform(image)
-        pseudolabel_logits = torch.from_numpy(self.pseudolabel_logits_arr[idx])
+        pseudolabel_logits = torch.from_numpy(np.load(os.path.join(self.pseudolabel_logits_dir, f"pseudolabel_{idx}.npy")))
         sam_contours_x = transforms.ToTensor()(self.sam_contours_x_arr[idx]).squeeze()
         sam_contours_y = transforms.ToTensor()(self.sam_contours_y_arr[idx]).squeeze()
 
