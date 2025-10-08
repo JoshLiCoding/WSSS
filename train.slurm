@@ -2,8 +2,8 @@
 
 # Set resource requirements: Queues are limited to seven day allocations
 # Time format: HH:MM:SS
-#SBATCH --time=12:00:00
-#SBATCH --mem=200GB
+#SBATCH --time=8:00:00
+#SBATCH --mem=50GB
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 
@@ -22,6 +22,7 @@
  
 # Load up your conda environment
 # Set up environment on watgpu.cs or in interactive session (use `source` keyword instead of `conda`)
+echo "Running on host: $(hostname)"
 source activate wsss
  
 # Task to run

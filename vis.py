@@ -28,8 +28,8 @@ def visualize_soft_probabilities(logits):
     soft_vis_image = Image.fromarray(soft_vis)
     return soft_vis_image
 
-def vis_train_sample_img(voc_train_dataset, train_dataset, deeplabv3, index, distance_transform, output_dir='.'):
-    device = next(deeplabv3.parameters()).device
+def vis_train_sample_img(voc_train_dataset, train_dataset, model, index, distance_transform, output_dir='.'):
+    device = next(model.parameters()).device
     
     img, gt_mask = voc_train_dataset[index]
     transformed_img, pseudolabel_logits, sam_contours_x, sam_contours_y = train_dataset[index]
@@ -40,10 +40,10 @@ def vis_train_sample_img(voc_train_dataset, train_dataset, deeplabv3, index, dis
     psuedolabel_vis = Image.fromarray(psuedolabel_vis)
     psuedolabel_vis = voc_train_dataset.decode_target(psuedolabel_vis)
     
-    deeplabv3.eval()
+    model.eval()
     transformed_img = transformed_img.unsqueeze(0).to(device)
     with torch.no_grad():
-        output = deeplabv3(transformed_img)[0]
+        output = model(transformed_img)[0]
     
     soft_output = np.array(visualize_soft_probabilities(output.cpu()))
 
@@ -51,7 +51,7 @@ def vis_train_sample_img(voc_train_dataset, train_dataset, deeplabv3, index, dis
     output_vis = Image.fromarray(output_vis)
     output_vis = voc_train_dataset.decode_target(output_vis)
     
-    fig, axes = plt.subplots(6, 2, figsize=(8, 24))
+    fig, axes = plt.subplots(7, 2, figsize=(8, 24))
     
     axes[0, 0].imshow(img)
     axes[0, 0].set_title('Original Image')
@@ -78,23 +78,31 @@ def vis_train_sample_img(voc_train_dataset, train_dataset, deeplabv3, index, dis
     axes[3, 1].set_title('SAM Distance Field (vertical)')
 
     axes[4, 0].imshow(soft_output)
-    axes[4, 0].set_title('Soft Deeplab Output')
+    axes[4, 0].set_title('Soft Model Output')
 
     axes[4, 1].imshow(output_vis)
-    axes[4, 1].set_title('Hard Deeplab Output')
+    axes[4, 1].set_title('Hard Model Output')
 
     H, W, _ = soft_output.shape
     expanded_sam_contours_x = np.zeros((H, W), dtype=np.uint8)
     expanded_sam_contours_x[:, :W-1] = sam_contours_x
     axes[5, 0].imshow(expanded_sam_contours_x, alpha=0.5)
     axes[5, 0].imshow(soft_output, alpha=0.5)
-    axes[5, 0].set_title('Overlay: Soft Deeplab Output & SAM Contours (horizontal)')
+    axes[5, 0].set_title('Soft Model Output & SAM Contours (horizontal)')
 
     expanded_sam_contours_y = np.zeros((H, W), dtype=np.uint8)
     expanded_sam_contours_y[:H-1, :] = sam_contours_y
     axes[5, 1].imshow(expanded_sam_contours_y, alpha=0.5)
     axes[5, 1].imshow(soft_output, alpha=0.5)
-    axes[5, 1].set_title('Overlay: Soft Deeplab Output & SAM Contours (vertical)')
+    axes[5, 1].set_title('Soft Model Output & SAM Contours (vertical)')
+
+    axes[6, 0].imshow(expanded_sam_contours_x, alpha=0.5)
+    axes[6, 0].imshow(output_vis, alpha=0.5)
+    axes[6, 0].set_title('Hard Model Output & SAM Contours (horizontal)')
+
+    axes[6, 1].imshow(expanded_sam_contours_y, alpha=0.5)
+    axes[6, 1].imshow(output_vis, alpha=0.5)
+    axes[6, 1].set_title('Hard Model Output & SAM Contours (vertical)')
     
     plt.tight_layout()
     save_path = os.path.join(output_dir, f'visualization_sample_{index}.png')
@@ -102,18 +110,18 @@ def vis_train_sample_img(voc_train_dataset, train_dataset, deeplabv3, index, dis
     plt.close()
     print(f"Visualization saved as '{save_path}'")
 
-def vis_val_sample_img(voc_val_dataset, val_dataset, deeplabv3, index, output_dir='.'):
-    device = next(deeplabv3.parameters()).device
+def vis_val_sample_img(voc_val_dataset, val_dataset, model, index, output_dir='.'):
+    device = next(model.parameters()).device
     
     img, gt_mask = voc_val_dataset[index]
     transformed_img, _ = val_dataset[index]
 
     gt_mask = voc_val_dataset.decode_target(gt_mask)
     
-    deeplabv3.eval()
+    model.eval()
     transformed_img = transformed_img.unsqueeze(0).to(device)
     with torch.no_grad():
-        output = deeplabv3(transformed_img)[0]
+        output = model(transformed_img)[0]
     
     soft_output = np.array(visualize_soft_probabilities(output.cpu()))
 
@@ -121,7 +129,7 @@ def vis_val_sample_img(voc_val_dataset, val_dataset, deeplabv3, index, output_di
     output_vis = Image.fromarray(output_vis)
     output_vis = voc_val_dataset.decode_target(output_vis)
     
-    # Resize Deeplab output to original image size
+    # Resize model output to original image size
     output_resized = output.cpu().unsqueeze(0)
     output_resized = torch.nn.functional.interpolate(
         output_resized, size=(img.size[1], img.size[0]), mode='bilinear', align_corners=False
@@ -138,13 +146,13 @@ def vis_val_sample_img(voc_val_dataset, val_dataset, deeplabv3, index, output_di
     axes[0, 2].set_title('GT mask')
 
     axes[1, 0].imshow(output_vis)
-    axes[1, 0].set_title('Deeplab Output')
+    axes[1, 0].set_title('Model Output')
 
     axes[1, 1].imshow(soft_output)
-    axes[1, 1].set_title('Soft Deeplab Output')
+    axes[1, 1].set_title('Soft Model Output')
 
     axes[1, 2].imshow(output_resized_vis)
-    axes[1, 2].set_title('Deeplab Output (Resized)')
+    axes[1, 2].set_title('Model Output (Resized)')
 
     axes[0, 1].axis('off')
 

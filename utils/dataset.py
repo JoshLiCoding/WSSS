@@ -76,7 +76,8 @@ class VOCSegmentation(data.Dataset):
                  year='2012',
                  image_set='train',
                  download=False,
-                 transform=None):
+                 transform=None,
+                 num_images=-1):
 
         is_aug=True
         
@@ -86,6 +87,7 @@ class VOCSegmentation(data.Dataset):
         self.filename = DATASET_YEAR_DICT[year]['filename']
         self.md5 = DATASET_YEAR_DICT[year]['md5']
         self.transform = transform
+        self.num_images = num_images
         
         self.image_set = image_set
         base_dir = DATASET_YEAR_DICT[year]['base_dir']
@@ -102,7 +104,7 @@ class VOCSegmentation(data.Dataset):
         if is_aug and image_set=='train':
             mask_dir = os.path.join(voc_root, 'SegmentationClassAug')
             assert os.path.exists(mask_dir), "SegmentationClassAug not found, please refer to README.md and prepare it manually"
-            split_f = os.path.join(voc_root, 'train_aug.txt')#'./datasets/data/train_aug.txt'
+            split_f = os.path.join(voc_root, 'train_aug.txt')
         else:
             mask_dir = os.path.join(voc_root, 'SegmentationClass')
             splits_dir = os.path.join(voc_root, 'ImageSets/Segmentation')
@@ -129,6 +131,8 @@ class VOCSegmentation(data.Dataset):
         return img, target
 
     def __len__(self):
+        if self.num_images > 0:
+            return self.num_images
         return len(self.images)
 
     @classmethod
@@ -137,9 +141,10 @@ class VOCSegmentation(data.Dataset):
         return cls.cmap[mask]
 
 class CustomVOCSegmentationTrain(Dataset):
-    def __init__(self, dataset, paths):
+    def __init__(self, dataset, num_classes, paths):
         self.dataset = dataset
-        self.pseudolabel_logits_dir = paths['clipseg_cache']
+        self.num_classes = num_classes
+        self.pseudolabel_logits_dir = paths['pseudolabels_dir']
         self.sam_contours_x_arr = np.load(paths['sam_contours_x'])
         self.sam_contours_y_arr = np.load(paths['sam_contours_y'])
 
@@ -149,11 +154,17 @@ class CustomVOCSegmentationTrain(Dataset):
     def __getitem__(self, idx):
         image, _ = self.dataset[idx]
         transformed_image = train_transform(image)
-        pseudolabel_logits = torch.from_numpy(np.load(os.path.join(self.pseudolabel_logits_dir, f"pseudolabel_{idx}.npy")))
+
+        preds = np.load(os.path.join(self.pseudolabel_logits_dir, f"pseudolabel_{idx}.npy"))
+        tags_id = np.load(os.path.join(self.pseudolabel_logits_dir, f"tags_{idx}.npy"))
+        full_preds = torch.full((self.num_classes, RESIZE_SIZE, RESIZE_SIZE), -1e9, dtype=torch.float32)
+        for i, tag_id in enumerate(tags_id):
+            full_preds[tag_id] = torch.from_numpy(preds[i])
+
         sam_contours_x = transforms.ToTensor()(self.sam_contours_x_arr[idx]).squeeze()
         sam_contours_y = transforms.ToTensor()(self.sam_contours_y_arr[idx]).squeeze()
 
-        return transformed_image, pseudolabel_logits, sam_contours_x, sam_contours_y
+        return transformed_image, full_preds, sam_contours_x, sam_contours_y
 
 class CustomVOCSegmentationVal(Dataset):
     def __init__(self, dataset):
