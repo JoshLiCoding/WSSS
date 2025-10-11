@@ -9,6 +9,10 @@ def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=dilation,
                     groups=groups, bias=False, dilation=dilation)
 
+class Flatten(nn.Module):
+    def forward(self, x):
+        return torch.flatten(x, 1)  
+
 class Bottleneck(nn.Module):
     expansion = 4
     def __init__(self, inplanes, planes, stride=1, downsample=None, groups=1, base_width=64, dilation=1, norm_layer=None):
@@ -50,15 +54,15 @@ class Bottleneck(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, layers, replace_stride_with_dilation):
+    def __init__(self, layers, replace_stride_with_dilation, num_classes):
         super(ResNet, self).__init__()
         self._norm_layer = nn.BatchNorm2d
 
+        self.num_classes = num_classes
         self.inplanes = 64
         self.dilation = 1
         self.groups = 1
         self.base_width = 64
-        self.num_classes = 1000
         self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = self._norm_layer(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
@@ -67,8 +71,10 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(Bottleneck, 128, layers[1], stride=2, dilate=replace_stride_with_dilation[0])
         self.layer3 = self._make_layer(Bottleneck, 256, layers[2], stride=2, dilate=replace_stride_with_dilation[1])
         self.layer4 = self._make_layer(Bottleneck, 512, layers[3], stride=2, dilate=replace_stride_with_dilation[2])
+
+        self.cam = nn.Conv2d(512 * Bottleneck.expansion, num_classes-1, kernel_size=1, bias=False)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(512 * Bottleneck.expansion, self.num_classes)
+        self.flatten = Flatten()
 
         # weight initialization
         for m in self.modules():
@@ -110,15 +116,15 @@ class ResNet(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
 
+        x = self.cam(x)
         x = self.avgpool(x)
-        x = torch.flatten(x, 1)
-        x = self.fc(x)
+        x = self.flatten(x)
 
         return x
 
-def ResNet101(replace_stride_with_dilation):
-    model = ResNet([3, 4, 23, 3], replace_stride_with_dilation)
+def ResNet101(replace_stride_with_dilation, num_classes):
+    model = ResNet([3, 4, 23, 3], replace_stride_with_dilation, num_classes)
     state_dict = load_state_dict_from_url('https://download.pytorch.org/models/resnet101-5d3b4d8f.pth', progress=False)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=False)
     print("Loaded pretrained ResNet101 weights")
     return model

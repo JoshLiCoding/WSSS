@@ -37,3 +37,16 @@ class SimpleSegmentationModel(nn.Module):
         x = self.classifier(features)
         x = F.interpolate(x, size=input_shape, mode='bilinear', align_corners=False) # upsample 4x
         return x
+
+class ClassificationAndSegmentationModel(nn.Module):
+    def __init__(self, backbone, classifier):
+        super(ClassificationAndSegmentationModel, self).__init__()
+        self.backbone = backbone
+        self.classifier = classifier
+    def forward(self, x):
+        out = OrderedDict()
+        features = self.backbone(x)
+        out['seg'] = self.classifier(features)
+        out['cam'] = features['cam']
+        out['class'] = features['class']
+        return out

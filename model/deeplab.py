@@ -2,23 +2,22 @@
 
 from .resnet import ResNet101
 from ._deeplab import DeepLabHeadV3Plus
-from .utils import IntermediateLayerGetter, SimpleSegmentationModel
+from .utils import ClassificationAndSegmentationModel, IntermediateLayerGetter, SimpleSegmentationModel
 
 # assumes:
 # - output_stride = 8
 # - pretrained_backbone = True
-def deeplabv3plus_resnet101():
+def deeplabv3plus_resnet101(num_classes):
     replace_stride_with_dilation = [False, True, True]
-    backbone = ResNet101(replace_stride_with_dilation)
+    backbone = ResNet101(replace_stride_with_dilation, num_classes)
 
-    return_layers = {'layer4': 'out', 'layer1': 'low_level'}
+    return_layers = {'layer4': 'feature', 'layer1': 'low_level', 'cam': 'cam', 'flatten': 'class'}
     backbone = IntermediateLayerGetter(backbone, return_layers)
 
     inplanes = 2048
     low_level_planes = 256
     aspp_dilate = [12, 24, 36]
-    num_classes = 21
     classifier = DeepLabHeadV3Plus(inplanes, low_level_planes, num_classes, aspp_dilate)
 
-    model = SimpleSegmentationModel(backbone, classifier)
+    model = ClassificationAndSegmentationModel(backbone, classifier)
     return model

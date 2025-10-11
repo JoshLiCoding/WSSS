@@ -1,6 +1,7 @@
 import os
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
 from PIL import Image
@@ -18,83 +19,54 @@ from utils.loss import CrossEntropyLoss, CollisionCrossEntropyLoss, PottsLoss
 from utils.metrics import update_miou
 from vis import vis_train_sample_img, vis_val_sample_img, vis_train_loss, vis_val_loss
 
-VOC_CLASSES = {0: "background", 1: "aeroplane", 2: "bicycle", 3: "bird", 4: "boat", 5: "bottle", 6: "bus", 7: "car", 8: "cat", 9: "chair", 10: "cow", 11: "diningtable", 12: "dog", 13: "horse", 14: "motorbike", 15: "person", 16: "potted plant", 17: "sheep", 18: "sofa", 19: "train", 20: "tv/monitor", 255: "ignore"}
-
 NUM_CLASSES = 21
 BATCH_SIZE = 16
-NUM_EPOCHS = 200
+NUM_EPOCHS = 50
 LEARNING_RATE = 0.01
 WEIGHT_DECAY = 1e-4
 MOMENTUM = 0.9
 IGNORE_INDEX = 255
-RESIZE_SIZE = 352
 VALIDATION_INTERVAL = 10
 POTTS_TYPE = 'quadratic'
 DISTANCE_TRANSFORM = None
-TRAIN_ONLY = False
+TRAIN_ONLY = True
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 DIRS = {
     'output': 'output',
     'checkpoints': 'checkpoints', 
     'sam_cache': 'sam_cache',
-    'clipseg_cache': 'clipseg_cache',
-    'visualizations': f'vis_{NUM_EPOCHS}epochs_{POTTS_TYPE}_{DISTANCE_TRANSFORM}_w=1000.0'
+    'visualizations': f'vis_{NUM_EPOCHS}epochs_cam_20_classes'
 }
 for dir_name, dir_path in DIRS.items():
     full_path = os.path.join(DIRS['output'], dir_path) if dir_name != 'output' else dir_path
     os.makedirs(full_path, exist_ok=True)
 PATHS = {
-    'model_checkpoint': os.path.join(DIRS['output'], DIRS['checkpoints'], 'cce.pt'),
-    'model': os.path.join(DIRS['output'], DIRS['checkpoints'], f'{POTTS_TYPE}_{DISTANCE_TRANSFORM}_w=1000.0.pt'),
-    'pseudolabels_dir': os.path.join(DIRS['output'], DIRS['clipseg_cache']),
-    'sam_contours_x': os.path.join(DIRS['output'], DIRS['sam_cache'], 'contours_x_aug.npy'),
-    'sam_contours_y': os.path.join(DIRS['output'], DIRS['sam_cache'], 'contours_y_aug.npy'),
+    'model_checkpoint': os.path.join(DIRS['output'], DIRS['checkpoints'], 'none.pt'),
+    'model': os.path.join(DIRS['output'], DIRS['checkpoints'], f'cam.pt'),
     'sam_checkpoint': os.path.join('sam_checkpoint', 'sam_vit_h_4b8939.pth')
 }
-
-def generate_pseudolabels(voc_train_dataset):
-    clipseg_processor = CLIPSegProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
-    clipseg_model = CLIPSegForImageSegmentation.from_pretrained("CIDAS/clipseg-rd64-refined").to(device)
-    for idx, (image, target) in enumerate(tqdm(voc_train_dataset, desc="Generating CLIPSeg pseudolabels")):
-        tags_id = np.unique(np.array(target))
-        tags_id = tags_id[tags_id != 255]
-        tags = [VOC_CLASSES[i] for i in tags_id]
-
-        inputs = clipseg_processor(text=tags, images=[image] * len(tags), padding="max_length", return_tensors="pt")
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-
-        clipseg_model.eval()
-        with torch.no_grad():
-            outputs = clipseg_model(**inputs)
-
-        preds = outputs.logits # preds have size (# tags, 352, 352)
-        np.save(os.path.join(PATHS['pseudolabels_dir'], f"pseudolabel_{idx}.npy"), preds.detach().cpu().numpy())
-        np.save(os.path.join(PATHS['pseudolabels_dir'], f"tags_{idx}.npy"), tags_id)
-
-    print(f"All pseudolabels saved individually to {PATHS['pseudolabels_dir']}.")
 
 def generate_sam_contours(voc_train_dataset):
     sam_checkpoint = PATHS['sam_checkpoint']
     model_type = "vit_h"
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint).to(device)
     mask_generator = SamAutomaticMaskGenerator(model=sam)
-    all_contours_x, all_contours_y = [], []
-    for image, target in tqdm(voc_train_dataset, desc="Generating SAM contours"):
-        resized_image = np.array(image.resize((RESIZE_SIZE, RESIZE_SIZE), Image.BILINEAR))
-        masks = mask_generator.generate(resized_image)
-        contours_x = np.zeros((RESIZE_SIZE, RESIZE_SIZE - 1), dtype=bool)
-        contours_y = np.zeros((RESIZE_SIZE - 1, RESIZE_SIZE), dtype=bool)
+    for i, (image, target) in tqdm(enumerate(voc_train_dataset), desc="Generating SAM contours"):
+        image = np.array(image)
+        masks = mask_generator.generate(image)
+        H, W = image.shape[:2]
+        contours_x = np.zeros((H, W - 1), dtype=bool)
+        contours_y = np.zeros((H - 1, W), dtype=bool)
 
         for mask in masks:
             segmentation = mask['segmentation']
             contours_x |= np.logical_xor(segmentation[:, :-1], segmentation[:, 1:]) # shape: (H, W-1)
             contours_y |= np.logical_xor(segmentation[:-1, :], segmentation[1:, :]) # shape: (H-1, W)
+        
+        np.save(os.path.join(DIRS['output'], DIRS['sam_cache'], f'sam_contours_x_{i}.npy'), contours_x)
+        np.save(os.path.join(DIRS['output'], DIRS['sam_cache'], f'sam_contours_y_{i}.npy'), contours_y)
 
-        all_contours_x.append(contours_x)
-        all_contours_y.append(contours_y)
-    np.save(PATHS['sam_contours_x'], np.array(all_contours_x))
-    np.save(PATHS['sam_contours_y'], np.array(all_contours_y))
     print("All SAM contours generated.")
 
 def main():
@@ -111,10 +83,9 @@ def main():
     )
     print(f"Training on {len(voc_train_dataset)} images.")
 
-    # generate_pseudolabels(voc_train_dataset)
-    # generate_sam_contours(voc_train_dataset)
+    generate_sam_contours(voc_train_dataset)
 
-    train_dataset = CustomVOCSegmentationTrain(voc_train_dataset, NUM_CLASSES, PATHS)
+    train_dataset = CustomVOCSegmentationTrain(voc_train_dataset, NUM_CLASSES, os.path.join(DIRS['output'], DIRS['sam_cache']))
     train_loader = DataLoader(
         train_dataset,
         batch_size=BATCH_SIZE,
@@ -122,12 +93,12 @@ def main():
     )
     val_dataset = CustomVOCSegmentationVal(voc_val_dataset)
 
-    model = deeplabv3plus_resnet101().to(device)
+    model = deeplabv3plus_resnet101(NUM_CLASSES).to(device)
     optimizer = torch.optim.SGD(params=[
         {'params': model.backbone.parameters(), 'lr': 0.1 * LEARNING_RATE},
         {'params': model.classifier.parameters(), 'lr': LEARNING_RATE},
     ], lr=LEARNING_RATE, momentum=0.9, weight_decay=WEIGHT_DECAY)
-    scheduler = PolyLR(optimizer, NUM_EPOCHS * len(train_loader), power=0.9)
+    # scheduler = PolyLR(optimizer, NUM_EPOCHS * len(train_loader), power=0.9)
 
     if os.path.exists(PATHS['model_checkpoint']):
         print(f"Loading checkpoint from {PATHS['model_checkpoint']}...")
@@ -139,8 +110,9 @@ def main():
 
     print("\nStarting training...")
     epoch_total_losses = []
-    epoch_cce_main_losses = []
-    epoch_potts_main_losses = []
+    epoch_class_losses = []
+    epoch_unary_losses = []
+    epoch_pairwise_losses = []
     validation_mious = []
     validation_epochs = []
     best_miou = 0.0
@@ -150,40 +122,60 @@ def main():
         model.train()
         
         running_total_loss = 0.0
-        running_cce_main = 0.0
-        running_potts_main = 0.0
-        for i, (transformed_images, pseudolabel_logits_batch, sam_contours_x_batch, sam_contours_y_batch) in enumerate(train_loader):
+        running_class_loss = 0.0
+        running_unary_loss = 0.0
+        running_pairwise_loss = 0.0
+        for i, (transformed_images, tags, sam_contours_x_batch, sam_contours_y_batch) in enumerate(train_loader):
             transformed_images = transformed_images.to(device)
-            pseudolabel_logits_batch = pseudolabel_logits_batch.to(device)
+            tags = tags.to(device)
             sam_contours_x_batch = sam_contours_x_batch.to(device)
             sam_contours_y_batch = sam_contours_y_batch.to(device)
 
             optimizer.zero_grad()
             outputs = model(transformed_images)
             
-            # unary potential
-            cce_loss_main = CollisionCrossEntropyLoss(outputs, pseudolabel_logits_batch) # CrossEntropyLoss(outputs, pseudolabel_logits_batch)
-            # pairwise potential
-            potts_loss_main = PottsLoss(POTTS_TYPE, outputs, sam_contours_x_batch, sam_contours_y_batch, DISTANCE_TRANSFORM) # torch.tensor(0.0, device=device)
+            # classification
+            class_loss = nn.BCEWithLogitsLoss()(outputs['class'], tags)
 
-            total_loss = cce_loss_main + potts_loss_main
+            # unary potential
+            cam = torch.relu(outputs['cam']) # (B, C-1, H/8, W/8)
+            cam_max = cam.view(cam.shape[0], cam.shape[1], -1).max(dim=2)[0].clamp(min=1e-6)
+            cam = cam / cam_max[:, :, None, None]
+
+            class_probs = torch.sigmoid(outputs['class'])  # (B, C-1)
+            cam = torch.einsum('bcij,bc->bcij', cam, class_probs)
+            cam_bg = 1 - torch.max(cam, dim=1, keepdim=True)[0]  # (B, 1, H/8, W/8)
+            cam = torch.cat([cam, cam_bg], dim=1)  # (B, C, H/8, W/8)
+            # sharpness?
+            upsampled_cam = F.interpolate(cam, size=outputs['seg'].shape[2:], mode='bilinear', align_corners=False) # 2x upsample
+
+            unary_loss = torch.tensor(0.0, device=device) # CollisionCrossEntropyLoss(outputs['seg'], upsampled_cam)
+
+            # pairwise potential
+            downsampled_sam_contours_x = F.max_pool2d(sam_contours_x_batch.unsqueeze(1), kernel_size=4, stride=4).squeeze(1)
+            downsampled_sam_contours_y = F.max_pool2d(sam_contours_y_batch.unsqueeze(1), kernel_size=4, stride=4).squeeze(1)
+            pairwise_loss = torch.tensor(0.0, device=device) # PottsLoss(POTTS_TYPE, outputs['seg'], downsampled_sam_contours_x, downsampled_sam_contours_y, DISTANCE_TRANSFORM)
+
+            total_loss = class_loss + unary_loss + pairwise_loss
 
             total_loss.backward()
             optimizer.step()
-            scheduler.step()
+            # scheduler.step()
 
             running_total_loss += total_loss.item()
-            running_cce_main += cce_loss_main.item()
-            running_potts_main += potts_loss_main.item()
+            running_class_loss += class_loss.item()
+            running_unary_loss += unary_loss.item()
+            running_pairwise_loss += pairwise_loss.item()
 
             if epoch == 0 and i == 0:
-                print(f"Initial losses -- Total: {total_loss.item():.4f}, CCE Main: {cce_loss_main.item():.4f}, Potts Main: {potts_loss_main.item():.4f}")
-        
+                print(f"Initial losses -- Total: {total_loss.item():.4f}, Class: {class_loss.item():.4f}, Unary: {unary_loss.item():.4f}, Pairwise: {pairwise_loss.item():.4f}")
+
         num_batches = len(train_loader)
         loss_data = [
             (running_total_loss, epoch_total_losses),
-            (running_cce_main, epoch_cce_main_losses),
-            (running_potts_main, epoch_potts_main_losses)
+            (running_class_loss, epoch_class_losses),
+            (running_unary_loss, epoch_unary_losses),
+            (running_pairwise_loss, epoch_pairwise_losses)
         ]
         for running_loss_sum, epoch_loss_list in loss_data:
             avg_loss = running_loss_sum / num_batches
@@ -191,11 +183,12 @@ def main():
             
         print(f"Epoch {epoch+1} finished. "
             f"Average Total Loss: {epoch_total_losses[-1]:.4f}, "
-            f"Avg CCE Main: {epoch_cce_main_losses[-1]:.4f}, "
-            f"Avg Potts Main: {epoch_potts_main_losses[-1]:.4f}"
+            f"Avg Class: {epoch_class_losses[-1]:.4f}, "
+            f"Avg Unary: {epoch_unary_losses[-1]:.4f}, "
+            f"Avg Pairwise: {epoch_pairwise_losses[-1]:.4f}"
             )
         
-        # Validation
+        # validation
         if (epoch + 1) % VALIDATION_INTERVAL == 0 or epoch == NUM_EPOCHS - 1:
             if TRAIN_ONLY:
                 print("TRAIN_ONLY is set to True, skipping validation. Saving model checkpoint...")
@@ -207,7 +200,7 @@ def main():
             print(f"Running validation at epoch {epoch + 1}...")
             model.eval()
             
-            # Initialize per-class intersection and union counters
+            # initialize per-class intersection and union counters
             intersection_counts = np.zeros(NUM_CLASSES)
             union_counts = np.zeros(NUM_CLASSES)
             
@@ -217,7 +210,7 @@ def main():
                     val_target = val_target.to(device)
 
                     val_outputs = model(val_transformed_image.unsqueeze(0))
-                    update_miou(val_outputs, val_target.unsqueeze(0), intersection_counts, union_counts, NUM_CLASSES, IGNORE_INDEX)
+                    update_miou(val_outputs['seg'], val_target.unsqueeze(0), intersection_counts, union_counts, NUM_CLASSES, IGNORE_INDEX)
 
             ious = []
             for cls in range(NUM_CLASSES):
@@ -245,21 +238,20 @@ def main():
 
     print(f"\nTraining complete! Best model was at epoch {best_epoch} with mIoU {best_miou:.4f}")
     
-    # Load best model for inference/visualization
     if os.path.exists(PATHS['model']):
         best_checkpoint = torch.load(PATHS['model'], map_location=device, weights_only=False)
         model.load_state_dict(best_checkpoint['model_state_dict'])
         print(f"Best model loaded successfully! Final validation mIoU: {best_miou:.4f}")
     
-    # generate visualizations for all training images
     vis_output_dir = os.path.join(DIRS['output'], DIRS['visualizations'])
     for i in range(0, len(voc_train_dataset), 100):
         vis_train_sample_img(voc_train_dataset, train_dataset, model, i, DISTANCE_TRANSFORM, vis_output_dir)
-    vis_train_loss(NUM_EPOCHS, epoch_total_losses, epoch_cce_main_losses, epoch_potts_main_losses, vis_output_dir)
+    vis_train_loss(NUM_EPOCHS, epoch_total_losses, epoch_class_losses, epoch_unary_losses, epoch_pairwise_losses, vis_output_dir)
+    
     if not TRAIN_ONLY:
         for i in range(0, len(voc_val_dataset), 50):
             vis_val_sample_img(voc_val_dataset, val_dataset, model, i, vis_output_dir)
-        vis_val_loss(NUM_EPOCHS, validation_mious, validation_epochs, vis_output_dir)
+        vis_val_loss(validation_mious, validation_epochs, vis_output_dir)
 
 if __name__ == "__main__":
     main()

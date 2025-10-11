@@ -1,12 +1,12 @@
 import torch
 
-def update_miou(predictions, targets, intersection_counts, union_counts, num_classes=21, ignore_index=255):
+def update_miou(predictions, targets, intersection_counts, union_counts, num_classes, ignore_index=255):
     predictions = torch.nn.functional.interpolate(
         predictions, size=targets.shape[-2:], mode='bilinear', align_corners=False
     )
     predictions = torch.argmax(predictions, dim=1) # (B, H, W)
     
-    # Create mask for valid pixels (not ignore_index)
+    # create mask for valid pixels (not ignore_index)
     valid_mask = (targets != ignore_index)
     
     for cls in range(num_classes):

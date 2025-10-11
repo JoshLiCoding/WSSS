@@ -11,7 +11,7 @@ from torchvision import transforms
 from torchvision.datasets.utils import download_url, check_integrity
 from PIL import Image
 
-# Augmented VOC dataset from https://github.com/VainF/DeepLabV3Plus-Pytorch/tree/master
+# augmented VOC dataset from https://github.com/VainF/DeepLabV3Plus-Pytorch/tree/master
 
 DATASET_YEAR_DICT = {
     '2012': {
@@ -21,22 +21,9 @@ DATASET_YEAR_DICT = {
         'base_dir': 'VOCdevkit/VOC2012'
     }
 }
-RESIZE_SIZE = 352
+RESIZE_SIZE = 448
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
-
-# train_transform = transforms.Compose([
-#     transforms.RandomResizedCrop(size=(RESIZE_SIZE, RESIZE_SIZE), scale=(0.5, 2.0)),
-#     transforms.RandomHorizontalFlip(),
-#     transforms.ToTensor(),
-#     transforms.Normalize(mean=MEAN, std=STD),
-# ])
-
-train_transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Resize((RESIZE_SIZE, RESIZE_SIZE)),
-    transforms.Normalize(mean=MEAN, std=STD),
-])
 
 val_transform = transforms.Compose([
     transforms.ToTensor(),
@@ -141,30 +128,58 @@ class VOCSegmentation(data.Dataset):
         return cls.cmap[mask]
 
 class CustomVOCSegmentationTrain(Dataset):
-    def __init__(self, dataset, num_classes, paths):
+    def __init__(self, dataset, num_classes, sam_cache_path):
         self.dataset = dataset
         self.num_classes = num_classes
-        self.pseudolabel_logits_dir = paths['pseudolabels_dir']
-        self.sam_contours_x_arr = np.load(paths['sam_contours_x'])
-        self.sam_contours_y_arr = np.load(paths['sam_contours_y'])
+        self.sam_cache_path = sam_cache_path
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        image, _ = self.dataset[idx]
-        transformed_image = train_transform(image)
+            image, target = self.dataset[idx]
+            sam_contours_x = np.load(os.path.join(self.sam_cache_path, f'sam_contours_x_{idx}.npy'))
+            sam_contours_y = np.load(os.path.join(self.sam_cache_path, f'sam_contours_y_{idx}.npy'))
 
-        preds = np.load(os.path.join(self.pseudolabel_logits_dir, f"pseudolabel_{idx}.npy"))
-        tags_id = np.load(os.path.join(self.pseudolabel_logits_dir, f"tags_{idx}.npy"))
-        full_preds = torch.full((self.num_classes, RESIZE_SIZE, RESIZE_SIZE), -1e9, dtype=torch.float32)
-        for i, tag_id in enumerate(tags_id):
-            full_preds[tag_id] = torch.from_numpy(preds[i])
+            # RandomResizedCrop
+            i, j, h, w = transforms.RandomResizedCrop.get_params(image, scale=(0.5, 1.5), ratio=(3. / 4., 4. / 3.))
+            image = transforms.functional.crop(image, i, j, h, w)
+            sam_contours_x = transforms.functional.crop(Image.fromarray(sam_contours_x), i, j, h, w-1)
+            sam_contours_y = transforms.functional.crop(Image.fromarray(sam_contours_y), i, j, h-1, w)
+            image = transforms.functional.resize(image, (RESIZE_SIZE, RESIZE_SIZE), interpolation=Image.BILINEAR)
+            sam_contours_x = transforms.functional.resize(sam_contours_x, (RESIZE_SIZE, RESIZE_SIZE - 1), interpolation=Image.NEAREST)
+            sam_contours_y = transforms.functional.resize(sam_contours_y, (RESIZE_SIZE - 1, RESIZE_SIZE), interpolation=Image.NEAREST)
 
-        sam_contours_x = transforms.ToTensor()(self.sam_contours_x_arr[idx]).squeeze()
-        sam_contours_y = transforms.ToTensor()(self.sam_contours_y_arr[idx]).squeeze()
+            # RandomHorizontalFlip
+            if torch.rand(1) < 0.5:
+                image = transforms.functional.hflip(image)
+                sam_contours_x = transforms.functional.hflip(sam_contours_x)
+                sam_contours_y = transforms.functional.hflip(sam_contours_y)
 
-        return transformed_image, full_preds, sam_contours_x, sam_contours_y
+            # ColorJitter only on image
+            color_jitter = transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4)
+            image = color_jitter(image)
+
+            # ToTensor
+            image_tensor = transforms.ToTensor()(image)
+            sam_contours_x_tensor = transforms.ToTensor()(np.array(sam_contours_x)).squeeze()
+            sam_contours_y_tensor = transforms.ToTensor()(np.array(sam_contours_y)).squeeze()
+
+            # Normalize only image
+            image_tensor = transforms.Normalize(MEAN, STD)(image_tensor)
+
+            tags = torch.unique(torch.from_numpy(np.array(target)))
+            tags = tags[(tags != 255) & (tags != 0)] - 1  # remove ignore index and class 0 (background)
+            tags_onehot = torch.zeros((self.num_classes-1), dtype=torch.float32)
+            for tag in tags:
+                tags_onehot[tag.item()] = 1.0
+
+            return image_tensor, tags_onehot, sam_contours_x_tensor, sam_contours_y_tensor
+
+    def denormalize(self, tensor):
+        for t, m, s in zip(tensor, MEAN, STD):
+            t.mul_(s).add_(m)
+        return tensor
 
 class CustomVOCSegmentationVal(Dataset):
     def __init__(self, dataset):

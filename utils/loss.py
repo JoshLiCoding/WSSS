@@ -7,13 +7,6 @@ import matplotlib.pyplot as plt
 def calculate_pairwise_affinity(sam_contour, transform_type):
     device = sam_contour.device
 
-    # maximum filter to dilate the contour
-    sam_contour_cpu = sam_contour.cpu().numpy()
-    dilated = np.zeros_like(sam_contour_cpu)
-    for i in range(sam_contour_cpu.shape[0]):
-        dilated[i] = ndimage.maximum_filter(sam_contour_cpu[i], size=(4, 4))
-    sam_contour = torch.from_numpy(dilated).to(device=device, dtype=torch.bool)
-
     if transform_type is None:
         w = (~sam_contour).to(torch.float32)
     else:
@@ -55,20 +48,13 @@ def CollisionCrossEntropyLoss(logits, target_logits):
     
     return loss
 
-# cnt = 0
-def PottsLoss(type, logits, sam_contours_x, sam_contours_y, distance_transform, weighting=1.0):
+def PottsLoss(type, logits, sam_contours_x, sam_contours_y, distance_transform):
     w_x = calculate_pairwise_affinity(sam_contours_x, distance_transform)
     w_y = calculate_pairwise_affinity(sam_contours_y, distance_transform)
     
     if type == 'bilinear':
         if distance_transform is None:
             weighting = 200.0
-        elif distance_transform == 'euclidean':
-            weighting = 0.1
-        elif distance_transform == 'exponential':
-            weighting = 0.001
-        elif distance_transform == 'gaussian_blur':
-            weighting = 100.0
         
         prob = torch.softmax(logits, dim=1)
         
@@ -81,7 +67,7 @@ def PottsLoss(type, logits, sam_contours_x, sam_contours_y, distance_transform, 
         loss_y = loss_y[:, :-1, :] * w_y
     elif type == 'quadratic':
         if distance_transform is None:
-            weighting = 1000.0
+            weighting = 3000.0
         
         prob = torch.softmax(logits, dim=1)
         
@@ -92,18 +78,6 @@ def PottsLoss(type, logits, sam_contours_x, sam_contours_y, distance_transform, 
         prob_y = torch.roll(prob, -1, dims=2)
         loss_y = 0.5 * torch.sum((prob - prob_y)**2, dim=1)
         loss_y = loss_y[:, :-1, :] * w_y
-
-    # loss_x_vis = loss_x.detach().cpu().numpy()
-    # loss_y_vis = loss_y.detach().cpu().numpy()
-    # global cnt
-    # fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-    # axes[0].imshow(loss_x_vis[0], cmap='viridis')
-    # axes[0].set_title('Potts Loss (horizontal)')
-    # axes[1].imshow(loss_y_vis[0], cmap='viridis')
-    # axes[1].set_title('Potts Loss (vertical)')
-    # plt.savefig(f'vis_potts/potts_loss_vis_{cnt}.png')
-    # plt.close()
-    # cnt += 1
 
     loss = loss_x.mean() + loss_y.mean()
     loss *= weighting

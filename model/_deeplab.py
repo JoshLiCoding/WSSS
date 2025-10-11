@@ -88,7 +88,7 @@ class DeepLabHeadV3Plus(nn.Module):
                 nn.init.constant_(m.bias, 0)
     def forward(self, feature):
         low_level_feature = self.project(feature['low_level'])
-        output_feature = self.aspp(feature['out'])
+        output_feature = self.aspp(feature['feature'])
         output_feature = F.interpolate(output_feature, size=low_level_feature.shape[2:], mode='bilinear', align_corners=False) # upsample 2x
         segmentation_logits = self.classifier(torch.cat([low_level_feature, output_feature], dim=1))
         return segmentation_logits
