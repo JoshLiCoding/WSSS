@@ -29,21 +29,21 @@ IGNORE_INDEX = 255
 VALIDATION_INTERVAL = 10
 POTTS_TYPE = 'quadratic'
 DISTANCE_TRANSFORM = None
-TRAIN_ONLY = True
+TRAIN_ONLY = False
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 DIRS = {
     'output': 'output',
     'checkpoints': 'checkpoints', 
     'sam_cache': 'sam_cache',
-    'visualizations': f'vis_{NUM_EPOCHS}epochs_cam_20_classes'
+    'visualizations': f'vis_{NUM_EPOCHS}epochs_pairwise'
 }
 for dir_name, dir_path in DIRS.items():
     full_path = os.path.join(DIRS['output'], dir_path) if dir_name != 'output' else dir_path
     os.makedirs(full_path, exist_ok=True)
 PATHS = {
-    'model_checkpoint': os.path.join(DIRS['output'], DIRS['checkpoints'], 'none.pt'),
-    'model': os.path.join(DIRS['output'], DIRS['checkpoints'], f'cam.pt'),
+    'model_checkpoint': os.path.join(DIRS['output'], DIRS['checkpoints'], 'unary_10_frozen_cam_t=0.01.pt'),
+    'model': os.path.join(DIRS['output'], DIRS['checkpoints'], f'pairwise_50.pt'),
     'sam_checkpoint': os.path.join('sam_checkpoint', 'sam_vit_h_4b8939.pth')
 }
 
@@ -83,7 +83,7 @@ def main():
     )
     print(f"Training on {len(voc_train_dataset)} images.")
 
-    generate_sam_contours(voc_train_dataset)
+    # generate_sam_contours(voc_train_dataset)
 
     train_dataset = CustomVOCSegmentationTrain(voc_train_dataset, NUM_CLASSES, os.path.join(DIRS['output'], DIRS['sam_cache']))
     train_loader = DataLoader(
@@ -95,7 +95,8 @@ def main():
 
     model = deeplabv3plus_resnet101(NUM_CLASSES).to(device)
     optimizer = torch.optim.SGD(params=[
-        {'params': model.backbone.parameters(), 'lr': 0.1 * LEARNING_RATE},
+        # {'params': model.backbone.parameters(), 'lr': 0.1 * LEARNING_RATE},
+        # {'params': model.backbone.cam.parameters(), 'lr': LEARNING_RATE},
         {'params': model.classifier.parameters(), 'lr': LEARNING_RATE},
     ], lr=LEARNING_RATE, momentum=0.9, weight_decay=WEIGHT_DECAY)
     # scheduler = PolyLR(optimizer, NUM_EPOCHS * len(train_loader), power=0.9)
@@ -145,16 +146,15 @@ def main():
             class_probs = torch.sigmoid(outputs['class'])  # (B, C-1)
             cam = torch.einsum('bcij,bc->bcij', cam, class_probs)
             cam_bg = 1 - torch.max(cam, dim=1, keepdim=True)[0]  # (B, 1, H/8, W/8)
-            cam = torch.cat([cam, cam_bg], dim=1)  # (B, C, H/8, W/8)
-            # sharpness?
+            cam = torch.cat([cam_bg, cam], dim=1)  # (B, C, H/8, W/8)
             upsampled_cam = F.interpolate(cam, size=outputs['seg'].shape[2:], mode='bilinear', align_corners=False) # 2x upsample
 
-            unary_loss = torch.tensor(0.0, device=device) # CollisionCrossEntropyLoss(outputs['seg'], upsampled_cam)
+            unary_loss = CollisionCrossEntropyLoss(outputs['seg'], upsampled_cam) # torch.tensor(0.0, device=device)
 
             # pairwise potential
             downsampled_sam_contours_x = F.max_pool2d(sam_contours_x_batch.unsqueeze(1), kernel_size=4, stride=4).squeeze(1)
             downsampled_sam_contours_y = F.max_pool2d(sam_contours_y_batch.unsqueeze(1), kernel_size=4, stride=4).squeeze(1)
-            pairwise_loss = torch.tensor(0.0, device=device) # PottsLoss(POTTS_TYPE, outputs['seg'], downsampled_sam_contours_x, downsampled_sam_contours_y, DISTANCE_TRANSFORM)
+            pairwise_loss = PottsLoss(POTTS_TYPE, outputs['seg'], downsampled_sam_contours_x, downsampled_sam_contours_y, DISTANCE_TRANSFORM) # torch.tensor(0.0, device=device)
 
             total_loss = class_loss + unary_loss + pairwise_loss
 

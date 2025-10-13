@@ -8,18 +8,18 @@ def calculate_pairwise_affinity(sam_contour, transform_type):
     device = sam_contour.device
 
     if transform_type is None:
-        w = (~sam_contour).to(torch.float32)
+        w = (~sam_contour.bool()).to(torch.float32)
     else:
         sam_contour_cpu = sam_contour.cpu().numpy()
         w = np.zeros(sam_contour_cpu.shape)
         for i in range(sam_contour_cpu.shape[0]):
             if transform_type == 'euclidean':
-                w[i] = ndimage.distance_transform_edt(~sam_contour_cpu[i])
+                w[i] = ndimage.distance_transform_edt(~sam_contour_cpu[i].bool())
             elif transform_type == 'exponential':
                 # T = 20
-                w[i] = np.exp(ndimage.distance_transform_edt(~sam_contour_cpu[i]) / 20.0) * 20.0
+                w[i] = np.exp(ndimage.distance_transform_edt(~sam_contour_cpu[i].bool()) / 20.0) * 20.0
             elif transform_type == 'gaussian_blur':
-                blur = ndimage.gaussian_filter(sam_contour_cpu[i].astype(np.float32), sigma=5)
+                blur = ndimage.gaussian_filter(sam_contour_cpu[i], sigma=5)
                 w[i] = 1-blur
             
         w = torch.from_numpy(w).to(dtype=torch.float32, device=device)
@@ -42,7 +42,8 @@ def CollisionCrossEntropyLoss(logits, target_logits):
     See "Soft Self-labeling and Potts Relaxations for Weakly-Supervised Segmentation" paper.
     CCE loss is robust to pseudo-label uncertainty without requiring hard labels.
     """
-    target_log_prob = F.log_softmax(target_logits, dim=1)
+    t = 0.01 # temperature
+    target_log_prob = F.log_softmax(target_logits / t, dim=1)
     log_prob = F.log_softmax(logits, dim=1)
     loss = (-torch.logsumexp(log_prob + target_log_prob, dim=1)).mean()
     
@@ -67,7 +68,7 @@ def PottsLoss(type, logits, sam_contours_x, sam_contours_y, distance_transform):
         loss_y = loss_y[:, :-1, :] * w_y
     elif type == 'quadratic':
         if distance_transform is None:
-            weighting = 3000.0
+            weighting = 100.0
         
         prob = torch.softmax(logits, dim=1)
         

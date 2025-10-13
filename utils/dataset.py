@@ -162,8 +162,8 @@ class CustomVOCSegmentationTrain(Dataset):
 
             # ToTensor
             image_tensor = transforms.ToTensor()(image)
-            sam_contours_x_tensor = transforms.ToTensor()(np.array(sam_contours_x)).squeeze()
-            sam_contours_y_tensor = transforms.ToTensor()(np.array(sam_contours_y)).squeeze()
+            sam_contours_x_tensor = transforms.ToTensor()(np.array(sam_contours_x)).squeeze().float()
+            sam_contours_y_tensor = transforms.ToTensor()(np.array(sam_contours_y)).squeeze().float()
 
             # Normalize only image
             image_tensor = transforms.Normalize(MEAN, STD)(image_tensor)

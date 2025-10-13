@@ -44,6 +44,7 @@ def vis_train_sample_img(voc_train_dataset, train_dataset, model, index, distanc
         output = model(transformed_img)
     for key in output:
         output[key] = output[key].cpu()
+    transformed_img = train_dataset.denormalize(transformed_img[0].cpu()).permute(1, 2, 0)
 
     soft_output = np.array(visualize_soft_probabilities(output['seg'][0]))
 
@@ -59,7 +60,7 @@ def vis_train_sample_img(voc_train_dataset, train_dataset, model, index, distanc
     axes[0, 1].imshow(gt_mask)
     axes[0, 1].set_title('GT mask')
 
-    axes[1, 0].imshow(train_dataset.denormalize(transformed_img[0].cpu()).permute(1, 2, 0))
+    axes[1, 0].imshow(transformed_img)
     axes[1, 0].set_title('Transformed Image')
 
     axes[1, 1].axis('off')
@@ -110,17 +111,29 @@ def vis_train_sample_img(voc_train_dataset, train_dataset, model, index, distanc
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-    pred_classes = torch.sigmoid(output['class'][0])
+    cam = torch.relu(output['cam']) # (1, C-1, H/8, W/8)
+    cam_max = cam.view(cam.shape[0], cam.shape[1], -1).max(dim=2)[0].clamp(min=1e-6)
+    cam = cam / cam_max[:, :, None, None]
+
+    class_probs = torch.sigmoid(output['class'])  # (1, C-1)
+    cam = torch.einsum('bcij,bc->bcij', cam, class_probs)
+    cam_bg = 1 - torch.max(cam, dim=1, keepdim=True)[0]  # (1, 1, H/8, W/8)
+    cam = torch.cat([cam_bg, cam], dim=1)  # (1, C, H/8, W/8)
+    cam = F.interpolate(cam, size=transformed_img.shape[:2], mode='bilinear', align_corners=False)[0]
+    class_probs = torch.cat([torch.tensor([1.0]), class_probs[0]])
+    tags = torch.cat([torch.tensor([1.0]), tags])
     VOC_CLASSES = {0: "background", 1: "aeroplane", 2: "bicycle", 3: "bird", 4: "boat", 5: "bottle", 6: "bus", 7: "car", 8: "cat", 9: "chair", 10: "cow", 11: "diningtable", 12: "dog", 13: "horse", 14: "motorbike", 15: "person", 16: "potted plant", 17: "sheep", 18: "sofa", 19: "train", 20: "tv/monitor", 255: "ignore"}
-    for i, pred_cls in enumerate(pred_classes):
-        print(f"Class: {VOC_CLASSES[i+1]}, confidence: {pred_cls.item():.4f}, gt confidence: {tags[i].item():.1f}")
+    for i, pred_cls in enumerate(class_probs):
+        print(f"Class: {VOC_CLASSES[i]}, confidence: {pred_cls.item():.4f}, gt confidence: {tags[i].item():.1f}")
         if tags[i].item() == 1.0:
-            cam = output['cam'][0, i].numpy()
-            plt.imshow(cam, cmap='jet')
-            plt.colorbar()
-            plt.title(f'CAM for class: {VOC_CLASSES[i+1]}')
+            cls_cam = cam[i].numpy()
+            plt.figure(figsize=(6, 6))
+            plt.imshow(transformed_img, alpha=0.7)
+            plt.imshow(cls_cam, cmap='jet', alpha=0.3)
+            plt.title(f'CAM for class: {VOC_CLASSES[i]}')
             plt.axis('off')
-            class_name = re.sub(r'[^a-zA-Z0-9]', '', VOC_CLASSES[i+1])
+            plt.colorbar()
+            class_name = re.sub(r'[^a-zA-Z0-9]', '', VOC_CLASSES[i])
             cam_save_path = os.path.join(output_dir, f'visualization_sample_{index}_cam_class_{class_name}.png')
             plt.savefig(cam_save_path, dpi=300, bbox_inches='tight')
             plt.close()

@@ -166,12 +166,15 @@ def run_kmeans_on_pixels(feat_map: torch.Tensor) -> Tuple[np.ndarray, torch.Tens
     centers  = torch.from_numpy(kmeans.cluster_centers_).to(feat_map.device)  # [k,D]
     return labels.reshape(H, W), F.normalize(centers.float(), p=2, dim=1)
 
-def centroid_zero_shot(centers: torch.Tensor, text_emb: torch.Tensor) -> np.ndarray:
+def centroid_zero_shot(centers: torch.Tensor, text_emb: torch.Tensor, class_names: list, temperature: float = 0.01) -> np.ndarray:
     """
     Cos-sim on centroids → class id for each centroid → returns [k] numpy ints.
     """
     sim   = torch.einsum("kd,cd->kc", centers, text_emb)      # [k, C]
-    return sim.argmax(1).cpu().numpy()                        # [k]
+    bg_sim = torch.max(sim[:, len(class_names):], dim=1, keepdim=True)[0]  # [k,1]
+    sim = torch.cat([sim[:, :len(class_names)], bg_sim], dim=1)
+    sim = sim / temperature
+    return sim.softmax(dim=1).cpu().numpy()
 
 # -------------------------- visualisation helpers -------------------------- #
 def save_reference(pil_image: Image.Image, fname: Path) -> np.ndarray:
@@ -180,17 +183,14 @@ def save_reference(pil_image: Image.Image, fname: Path) -> np.ndarray:
     np_img = np.asarray(pil_image).astype(np.float32) / 255.0
     plt.imsave(fname, np_img);  return np_img
 
-def save_overlay(img_np: np.ndarray, idx_map: np.ndarray, labels: Sequence[str], background_labels: Sequence[str],
+def save_overlay(img_np: np.ndarray, pix_prob: np.ndarray, labels: Sequence[str],
                  fname: Path, alpha: float = 0.7):
-    H, W = idx_map.shape
+    H, W = img_np.shape[:2]
     cmap = plt.get_cmap("tab10", len(labels)+1)
-    seg = np.zeros((H, W, 4), dtype=np.float32)
-    for i in range(len(labels)+len(background_labels)):
-        mask = idx_map == i
-        if(i < len(labels)):
-            seg[mask] = (*cmap(i)[:3], alpha)
-        else:
-            seg[mask] = (0, 0, 0, alpha)
+    seg = np.zeros((H, W, 3), dtype=np.float32)
+    # make the overlay a soft blend of the color by the pix prob
+    for c in range(len(labels)+1):
+        seg[..., :3] += alpha * np.array(cmap(c)[:3]) * pix_prob[..., c:c+1]
     overlay = np.array(seg)
     overlay[..., :3] *= img_np
     plt.figure(figsize=(6,4));  plt.imshow(overlay); plt.axis("off")
@@ -219,13 +219,14 @@ def main() -> None:
     # 4. k-means on per-pixel features ---------------------------------------
     pix_labels, centroids = run_kmeans_on_pixels(feat_map)                    # [H,W], [k,D]
     # 5. zero-shot classify centroids, propagate to pixels -------------------
-    centroid2cls = centroid_zero_shot(centroids, text_emb)                    # [k]
-    pred_map     = centroid2cls[pix_labels]                                   # [H,W]
+    centroid_prob = centroid_zero_shot(centroids, text_emb, CLASS_NAMES)                    # [k, C+1]
+    print(centroid_prob)
+    pix_prob    = centroid_prob[pix_labels]                                   # [H, W, C+1]
 
     # 6. visuals -------------------------------------------------------------
     OUTPUT_DIR.mkdir(exist_ok=True)
     ref_np = save_reference((pil_img), OUTPUT_DIR/"dino_txt_img.png")
-    save_overlay(ref_np, pred_map, CLASS_NAMES, BACKGROUND_CLASS_NAMES, OUTPUT_DIR/"dino_txt_")
+    save_overlay(ref_np, pix_prob, CLASS_NAMES, OUTPUT_DIR/"dino_txt_")
 
 if __name__ == "__main__":
     main()
