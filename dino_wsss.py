@@ -5,7 +5,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
 from PIL import Image
-import cv2
 from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
@@ -13,6 +12,7 @@ from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
 from model.deeplab import deeplabv3plus_resnet101
 from model.scheduler import PolyLR
+from model.dino_txt import generate_pseudolabels
 from utils.dataset import VOCSegmentation, CustomVOCSegmentationTrain, CustomVOCSegmentationVal
 from utils.loss import CrossEntropyLoss, CollisionCrossEntropyLoss, PottsLoss
 from utils.metrics import update_miou
@@ -84,6 +84,7 @@ def main():
 
     # generate_sam_contours(voc_train_dataset)
     generate_pseudolabels(voc_train_dataset)
+    return
 
     train_dataset = CustomVOCSegmentationTrain(voc_train_dataset, NUM_CLASSES, os.path.join(DIRS['output'], DIRS['sam_cache']))
     train_loader = DataLoader(

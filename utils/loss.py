@@ -68,7 +68,7 @@ def PottsLoss(type, logits, sam_contours_x, sam_contours_y, distance_transform):
         loss_y = loss_y[:, :-1, :] * w_y
     elif type == 'quadratic':
         if distance_transform is None:
-            weighting = 100.0
+            weighting = 800.0
         
         prob = torch.softmax(logits, dim=1)
         
