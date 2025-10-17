@@ -48,8 +48,8 @@ def prepare_model():
     model, tokenizer = torch.hub.load(DINOV3_LOCATION,
             'dinov3_vitl16_dinotxt_tet1280d20h24l', 
             source='local',
-            weights=os.path.join(DINOV3_LOCATION, 'dinov3_vitl16_dinotxt_vision_head_and_text_encoder.pth'), 
-            backbone_weights=os.path.join(DINOV3_LOCATION, 'dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth'))
+            weights=os.path.join(DINOV3_LOCATION, 'weights', 'dinov3_vitl16_dinotxt_vision_head_and_text_encoder-a442d8f5.pth'), 
+            backbone_weights=os.path.join(DINOV3_LOCATION, 'weights', 'dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth'))
     model = model.to(DEVICE)
     return model, tokenizer
 
@@ -149,11 +149,14 @@ def centroid_zero_shot(centers: torch.Tensor, text_emb: torch.Tensor, class_name
     # sim *= scale
     # return sim.softmax(dim=1).cpu().numpy()
 
-def generate_pseudolabels(dataset):
+def generate_pseudolabels(dataset, start_index=0):
     random.seed(0); torch.manual_seed(0)
     model, tokenizer = prepare_model()
     preprocess = make_classification_eval_transform()
-    for i, (img, target) in tqdm(enumerate(dataset), desc="Generating pseudo-labels"):
+
+    print(f"Generating pseudo-labels from index {start_index} to {len(dataset)}")
+    for i in tqdm(range(start_index, len(dataset)), desc="Generating pseudo-labels"):
+        img, target = dataset[i]
         # 1. load & canonically resize once for cropping geometry ----------------
         pil_img = img.resize((CANONICAL_SIZE[1], CANONICAL_SIZE[0]))
         class_indices = np.unique(np.array(target))

@@ -7,6 +7,13 @@ import matplotlib.pyplot as plt
 def calculate_pairwise_affinity(sam_contour, transform_type):
     device = sam_contour.device
 
+    # dilation by 4 - apply 4x4 max pooling using ndimage to maintain spatial dimensions
+    sam_contour_cpu = sam_contour.cpu().numpy()
+    dilated_contour = np.zeros_like(sam_contour_cpu)
+    for i in range(sam_contour_cpu.shape[0]):
+        dilated_contour[i] = ndimage.maximum_filter(sam_contour_cpu[i], size=4)
+    sam_contour = torch.from_numpy(dilated_contour).to(device)
+
     if transform_type is None:
         w = (~sam_contour.bool()).to(torch.float32)
     else:
@@ -42,7 +49,7 @@ def CollisionCrossEntropyLoss(logits, target_logits):
     See "Soft Self-labeling and Potts Relaxations for Weakly-Supervised Segmentation" paper.
     CCE loss is robust to pseudo-label uncertainty without requiring hard labels.
     """
-    t = 0.01 # temperature
+    t = 0.05 # temperature
     target_log_prob = F.log_softmax(target_logits / t, dim=1)
     log_prob = F.log_softmax(logits, dim=1)
     loss = (-torch.logsumexp(log_prob + target_log_prob, dim=1)).mean()

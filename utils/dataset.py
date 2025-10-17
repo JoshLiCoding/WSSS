@@ -64,7 +64,7 @@ class VOCSegmentation(data.Dataset):
                  image_set='train',
                  download=False,
                  transform=None,
-                 num_images=-1):
+                 n_images=-1):
 
         is_aug=True
         
@@ -74,7 +74,7 @@ class VOCSegmentation(data.Dataset):
         self.filename = DATASET_YEAR_DICT[year]['filename']
         self.md5 = DATASET_YEAR_DICT[year]['md5']
         self.transform = transform
-        self.num_images = num_images
+        self.n_images = n_images
         
         self.image_set = image_set
         base_dir = DATASET_YEAR_DICT[year]['base_dir']
@@ -118,9 +118,9 @@ class VOCSegmentation(data.Dataset):
         return img, target
 
     def __len__(self):
-        if self.num_images > 0:
-            return self.num_images
-        return len(self.images)
+        if self.n_images == -1:
+            return len(self.images)
+        return min(self.n_images, len(self.images))
 
     @classmethod
     def decode_target(cls, mask):
@@ -128,10 +128,11 @@ class VOCSegmentation(data.Dataset):
         return cls.cmap[mask]
 
 class CustomVOCSegmentationTrain(Dataset):
-    def __init__(self, dataset, num_classes, sam_cache_path):
+    def __init__(self, dataset, num_classes, sam_cache_path, pseudolabels_path):
         self.dataset = dataset
         self.num_classes = num_classes
         self.sam_cache_path = sam_cache_path
+        self.pseudolabels_path = pseudolabels_path
 
     def __len__(self):
         return len(self.dataset)
@@ -140,22 +141,31 @@ class CustomVOCSegmentationTrain(Dataset):
             image, target = self.dataset[idx]
             sam_contours_x = np.load(os.path.join(self.sam_cache_path, f'sam_contours_x_{idx}.npy'))
             sam_contours_y = np.load(os.path.join(self.sam_cache_path, f'sam_contours_y_{idx}.npy'))
+            pseudolabels = np.load(os.path.join(self.pseudolabels_path, f'pseudolabels_{idx}.npy'))
+            class_indices = np.load(os.path.join(self.pseudolabels_path, f'class_indices_{idx}.npy'))
+
+            # Convert pseudolabels to torch tensor and permute to (C, H, W)
+            pseudolabels_tensor = torch.from_numpy(pseudolabels).float().permute(2, 0, 1)
 
             # RandomResizedCrop
             i, j, h, w = transforms.RandomResizedCrop.get_params(image, scale=(0.5, 1.5), ratio=(3. / 4., 4. / 3.))
             image = transforms.functional.crop(image, i, j, h, w)
             sam_contours_x = transforms.functional.crop(Image.fromarray(sam_contours_x), i, j, h, w-1)
             sam_contours_y = transforms.functional.crop(Image.fromarray(sam_contours_y), i, j, h-1, w)
+            pseudolabels_tensor = transforms.functional.crop(pseudolabels_tensor, i, j, h, w)
+
             image = transforms.functional.resize(image, (RESIZE_SIZE, RESIZE_SIZE), interpolation=Image.BILINEAR)
             sam_contours_x = transforms.functional.resize(sam_contours_x, (RESIZE_SIZE, RESIZE_SIZE - 1), interpolation=Image.NEAREST)
             sam_contours_y = transforms.functional.resize(sam_contours_y, (RESIZE_SIZE - 1, RESIZE_SIZE), interpolation=Image.NEAREST)
+            pseudolabels_tensor = transforms.functional.resize(pseudolabels_tensor, (RESIZE_SIZE, RESIZE_SIZE), interpolation=Image.BILINEAR)
 
             # RandomHorizontalFlip
             if torch.rand(1) < 0.5:
                 image = transforms.functional.hflip(image)
                 sam_contours_x = transforms.functional.hflip(sam_contours_x)
                 sam_contours_y = transforms.functional.hflip(sam_contours_y)
-
+                pseudolabels_tensor = transforms.functional.hflip(pseudolabels_tensor)
+            
             # ColorJitter only on image
             color_jitter = transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4)
             image = color_jitter(image)
@@ -168,13 +178,13 @@ class CustomVOCSegmentationTrain(Dataset):
             # Normalize only image
             image_tensor = transforms.Normalize(MEAN, STD)(image_tensor)
 
-            tags = torch.unique(torch.from_numpy(np.array(target)))
-            tags = tags[(tags != 255) & (tags != 0)] - 1  # remove ignore index and class 0 (background)
-            tags_onehot = torch.zeros((self.num_classes-1), dtype=torch.float32)
-            for tag in tags:
-                tags_onehot[tag.item()] = 1.0
+            # Expand pseudolabels
+            full_logits = torch.full((self.num_classes, pseudolabels_tensor.shape[1], pseudolabels_tensor.shape[2]), -1e6, dtype=torch.float32)
+            for i, class_idx in enumerate(class_indices):
+                full_logits[class_idx] = pseudolabels_tensor[i]
+            full_logits[0] = pseudolabels_tensor[len(class_indices)] # background class
 
-            return image_tensor, tags_onehot, sam_contours_x_tensor, sam_contours_y_tensor
+            return image_tensor, full_logits, sam_contours_x_tensor, sam_contours_y_tensor
 
     def denormalize(self, tensor):
         for t, m, s in zip(tensor, MEAN, STD):

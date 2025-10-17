@@ -34,25 +34,27 @@ def vis_train_sample_img(voc_train_dataset, train_dataset, model, index, distanc
     device = next(model.parameters()).device
     
     img, gt_mask = voc_train_dataset[index]
-    transformed_img, tags, sam_contours_x, sam_contours_y = train_dataset[index]
+    transformed_img, pseudolabel_logits, sam_contours_x, sam_contours_y = train_dataset[index]
 
     gt_mask = voc_train_dataset.decode_target(gt_mask)
 
     model.eval()
     transformed_img = transformed_img.unsqueeze(0).to(device)
     with torch.no_grad():
-        output = model(transformed_img)
-    for key in output:
-        output[key] = output[key].cpu()
+        output = model(transformed_img)[0].cpu()
     transformed_img = train_dataset.denormalize(transformed_img[0].cpu()).permute(1, 2, 0)
 
-    soft_output = np.array(visualize_soft_probabilities(output['seg'][0]))
+    soft_pseudolabels = np.array(visualize_soft_probabilities(pseudolabel_logits / 0.05)) # temperature = 0.05
+    pseudolabels_vis = pseudolabel_logits.argmax(0).numpy().astype(np.uint8)
+    pseudolabels_vis = Image.fromarray(pseudolabels_vis)
+    pseudolabels_vis = voc_train_dataset.decode_target(pseudolabels_vis)
 
-    output_vis = output['seg'][0].argmax(0).numpy().astype(np.uint8)
+    soft_output = np.array(visualize_soft_probabilities(output))
+    output_vis = output.argmax(0).numpy().astype(np.uint8)
     output_vis = Image.fromarray(output_vis)
     output_vis = voc_train_dataset.decode_target(output_vis)
     
-    fig, axes = plt.subplots(7, 2, figsize=(8, 24))
+    fig, axes = plt.subplots(8, 2, figsize=(8, 24))
     
     axes[0, 0].imshow(img)
     axes[0, 0].set_title('Original Image')
@@ -65,79 +67,55 @@ def vis_train_sample_img(voc_train_dataset, train_dataset, model, index, distanc
 
     axes[1, 1].axis('off')
 
-    axes[2, 0].imshow(sam_contours_x, cmap='grey')
-    axes[2, 0].set_title('SAM Contours (horizontal)')
+    axes[2, 0].imshow(soft_pseudolabels)
+    axes[2, 0].set_title('Soft Pseudolabels')
 
-    axes[2, 1].imshow(sam_contours_y, cmap='grey')
-    axes[2, 1].set_title('SAM Contours (vertical)')
+    axes[2, 1].imshow(pseudolabels_vis)
+    axes[2, 1].set_title('Pseudolabels')
 
-    axes[3, 0].imshow(calculate_pairwise_affinity(sam_contours_x.unsqueeze(0), distance_transform).squeeze(0), cmap='grey')
-    axes[3, 0].set_title('SAM Distance Field (horizontal)')
+    axes[3, 0].imshow(sam_contours_x, cmap='grey')
+    axes[3, 0].set_title('SAM Contours (horizontal)')
 
-    axes[3, 1].imshow(calculate_pairwise_affinity(sam_contours_y.unsqueeze(0), distance_transform).squeeze(0), cmap='grey')
-    axes[3, 1].set_title('SAM Distance Field (vertical)')
+    axes[3, 1].imshow(sam_contours_y, cmap='grey')
+    axes[3, 1].set_title('SAM Contours (vertical)')
 
-    axes[4, 0].imshow(soft_output)
-    axes[4, 0].set_title('Soft Model Output')
+    axes[4, 0].imshow(calculate_pairwise_affinity(sam_contours_x.unsqueeze(0), distance_transform).squeeze(0), cmap='grey')
+    axes[4, 0].set_title('SAM Distance Field (horizontal)')
 
-    axes[4, 1].imshow(output_vis)
-    axes[4, 1].set_title('Hard Model Output')
+    axes[4, 1].imshow(calculate_pairwise_affinity(sam_contours_y.unsqueeze(0), distance_transform).squeeze(0), cmap='grey')
+    axes[4, 1].set_title('SAM Distance Field (vertical)')
 
-    H, W, _ = soft_output.shape
-    downsampled_sam_contours_x = F.max_pool2d(sam_contours_x.unsqueeze(0).unsqueeze(0), kernel_size=4, stride=4).squeeze()
+    axes[5, 0].imshow(soft_output)
+    axes[5, 0].set_title('Soft Model Output')
+
+    axes[5, 1].imshow(output_vis)
+    axes[5, 1].set_title('Hard Model Output')
+    
+    H, W = output_vis.shape[:2]
     expanded_sam_contours_x = np.zeros((H, W), dtype=np.uint8)
-    expanded_sam_contours_x[:, :W-1] = downsampled_sam_contours_x
-    axes[5, 0].imshow(expanded_sam_contours_x, alpha=0.5)
-    axes[5, 0].imshow(soft_output, alpha=0.5)
-    axes[5, 0].set_title('Soft Model Output & SAM Contours (horizontal)')
-
-    downsampled_sam_contours_y = F.max_pool2d(sam_contours_y.unsqueeze(0).unsqueeze(0), kernel_size=4, stride=4).squeeze()
-    expanded_sam_contours_y = np.zeros((H, W), dtype=np.uint8)
-    expanded_sam_contours_y[:H-1, :] = downsampled_sam_contours_y
-    axes[5, 1].imshow(expanded_sam_contours_y, alpha=0.5)
-    axes[5, 1].imshow(soft_output, alpha=0.5)
-    axes[5, 1].set_title('Soft Model Output & SAM Contours (vertical)')
-
+    expanded_sam_contours_x[:, :W-1] = sam_contours_x
     axes[6, 0].imshow(expanded_sam_contours_x, alpha=0.5)
-    axes[6, 0].imshow(output_vis, alpha=0.5)
-    axes[6, 0].set_title('Hard Model Output & SAM Contours (horizontal)')
+    axes[6, 0].imshow(soft_output, alpha=0.5)
+    axes[6, 0].set_title('Soft Model Output & SAM Contours (horizontal)')
 
+    expanded_sam_contours_y = np.zeros((H, W), dtype=np.uint8)
+    expanded_sam_contours_y[:H-1, :] = sam_contours_y
     axes[6, 1].imshow(expanded_sam_contours_y, alpha=0.5)
-    axes[6, 1].imshow(output_vis, alpha=0.5)
-    axes[6, 1].set_title('Hard Model Output & SAM Contours (vertical)')
+    axes[6, 1].imshow(soft_output, alpha=0.5)
+    axes[6, 1].set_title('Soft Model Output & SAM Contours (vertical)')
+
+    axes[7, 0].imshow(expanded_sam_contours_x, alpha=0.5)
+    axes[7, 0].imshow(output_vis, alpha=0.5)
+    axes[7, 0].set_title('Hard Model Output & SAM Contours (horizontal)')
+
+    axes[7, 1].imshow(expanded_sam_contours_y, alpha=0.5)
+    axes[7, 1].imshow(output_vis, alpha=0.5)
+    axes[7, 1].set_title('Hard Model Output & SAM Contours (vertical)')
     
     plt.tight_layout()
     save_path = os.path.join(output_dir, f'visualization_sample_{index}.png')
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
-
-    cam = torch.relu(output['cam']) # (1, C-1, H/8, W/8)
-    cam_max = cam.view(cam.shape[0], cam.shape[1], -1).max(dim=2)[0].clamp(min=1e-6)
-    cam = cam / cam_max[:, :, None, None]
-
-    class_probs = torch.sigmoid(output['class'])  # (1, C-1)
-    cam = torch.einsum('bcij,bc->bcij', cam, class_probs)
-    cam_bg = 1 - torch.max(cam, dim=1, keepdim=True)[0]  # (1, 1, H/8, W/8)
-    cam = torch.cat([cam_bg, cam], dim=1)  # (1, C, H/8, W/8)
-    cam = F.interpolate(cam, size=transformed_img.shape[:2], mode='bilinear', align_corners=False)[0]
-    class_probs = torch.cat([torch.tensor([1.0]), class_probs[0]])
-    tags = torch.cat([torch.tensor([1.0]), tags])
-    VOC_CLASSES = {0: "background", 1: "aeroplane", 2: "bicycle", 3: "bird", 4: "boat", 5: "bottle", 6: "bus", 7: "car", 8: "cat", 9: "chair", 10: "cow", 11: "diningtable", 12: "dog", 13: "horse", 14: "motorbike", 15: "person", 16: "potted plant", 17: "sheep", 18: "sofa", 19: "train", 20: "tv/monitor", 255: "ignore"}
-    for i, pred_cls in enumerate(class_probs):
-        print(f"Class: {VOC_CLASSES[i]}, confidence: {pred_cls.item():.4f}, gt confidence: {tags[i].item():.1f}")
-        if tags[i].item() == 1.0:
-            cls_cam = cam[i].numpy()
-            plt.figure(figsize=(6, 6))
-            plt.imshow(transformed_img, alpha=0.7)
-            plt.imshow(cls_cam, cmap='jet', alpha=0.3)
-            plt.title(f'CAM for class: {VOC_CLASSES[i]}')
-            plt.axis('off')
-            plt.colorbar()
-            class_name = re.sub(r'[^a-zA-Z0-9]', '', VOC_CLASSES[i])
-            cam_save_path = os.path.join(output_dir, f'visualization_sample_{index}_cam_class_{class_name}.png')
-            plt.savefig(cam_save_path, dpi=300, bbox_inches='tight')
-            plt.close()
-    print(f"Visualization saved as '{save_path}'")
 
 def vis_val_sample_img(voc_val_dataset, val_dataset, model, index, output_dir='.'):
     device = next(model.parameters()).device
@@ -150,18 +128,16 @@ def vis_val_sample_img(voc_val_dataset, val_dataset, model, index, output_dir='.
     model.eval()
     transformed_img = transformed_img.unsqueeze(0).to(device)
     with torch.no_grad():
-        output = model(transformed_img)
-    for key in output:
-        output[key] = output[key].cpu()
+        output = model(transformed_img)[0].cpu()
     
-    soft_output = np.array(visualize_soft_probabilities(output['seg'][0]))
+    soft_output = np.array(visualize_soft_probabilities(output))
 
-    output_vis = output['seg'][0].argmax(0).numpy().astype(np.uint8)
+    output_vis = output.argmax(0).numpy().astype(np.uint8)
     output_vis = Image.fromarray(output_vis)
     output_vis = voc_val_dataset.decode_target(output_vis)
     
     # Resize model output to original image size
-    output_resized = output['seg']
+    output_resized = output 
     output_resized = torch.nn.functional.interpolate(
         output_resized, size=(img.size[1], img.size[0]), mode='bilinear', align_corners=False
     )[0]
@@ -193,7 +169,7 @@ def vis_val_sample_img(voc_val_dataset, val_dataset, model, index, output_dir='.
     plt.close()
     print(f"Validation visualization saved as '{save_path}'")
 
-def vis_train_loss(num_epochs, epoch_total_losses, epoch_class_losses, epoch_unary_losses, epoch_pairwise_losses, output_dir='.'):
+def vis_train_loss(num_epochs, epoch_total_losses, epoch_unary_losses, epoch_pairwise_losses, output_dir='.'):
     # Graph 1: Total Loss
     epochs = range(1, num_epochs + 1)
     plt.figure(figsize=(6, 4))
@@ -208,7 +184,6 @@ def vis_train_loss(num_epochs, epoch_total_losses, epoch_class_losses, epoch_una
 
     # Graph 2: Individual Loss Components
     plt.figure(figsize=(6, 4))
-    plt.plot(epochs, epoch_class_losses, label='Class Loss', color='orange', linestyle='--')
     plt.plot(epochs, epoch_unary_losses, label='Unary Loss', color='green', linestyle='--')
     plt.plot(epochs, epoch_pairwise_losses, label='Pairwise Loss', color='red', linestyle='--')
 

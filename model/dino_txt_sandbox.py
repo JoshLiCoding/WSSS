@@ -57,7 +57,7 @@ DINO_EMBED_DIM = 1024
 # Helper utilities                                                             #
 # --------------------------------------------------------------------------- #
 def download_image(url: str) -> Image.Image:
-    return Image.open('/u501/j234li/wsss/VOCdevkit/VOC2012/JPEGImages/2011_003275.jpg').convert("RGB")
+    return Image.open('/u501/j234li/wsss/VOCdevkit/VOC2012/JPEGImages/2011_003255.jpg').convert("RGB")
     # with urllib.request.urlopen(url) as resp:
     #     return Image.open(resp).convert("RGB")
 
@@ -72,8 +72,8 @@ def prepare_model():
     model, tokenizer = torch.hub.load(DINOV3_LOCATION,
             'dinov3_vitl16_dinotxt_tet1280d20h24l', 
             source='local',
-            weights=os.path.join(DINOV3_LOCATION, 'dinov3_vitl16_dinotxt_vision_head_and_text_encoder.pth'), 
-            backbone_weights=os.path.join(DINOV3_LOCATION, 'dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth'))
+            weights=os.path.join(DINOV3_LOCATION, 'weights', 'dinov3_vitl16_dinotxt_vision_head_and_text_encoder-a442d8f5.pth'), 
+            backbone_weights=os.path.join(DINOV3_LOCATION, 'weights', 'dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth'))
     model = model.to(DEVICE)
     return model, tokenizer
 
@@ -230,17 +230,17 @@ def main() -> None:
     ref_np = save_reference((pil_img), OUTPUT_DIR/"dino_txt_img.png")
     save_overlay(ref_np, pix_prob, CLASS_NAMES, OUTPUT_DIR/"dino_txt_")
 
-# CLASS_NAMES = {0: "background", 1: "aeroplane", 2: "bicycle", 3: "bird", 4: "boat", 5: "bottle", 6: "bus", 7: "car", 8: "cat", 9: "chair", 10: "cow", 11: "diningtable", 12: "dog", 13: "horse", 14: "motorbike", 15: "person", 16: "potted plant", 17: "sheep", 18: "sofa", 19: "train", 20: "tv/monitor", 255: "ignore"}
+CLASS_NAMES = {0: "background", 1: "aeroplane", 2: "bicycle", 3: "bird", 4: "boat", 5: "bottle", 6: "bus", 7: "car", 8: "cat", 9: "chair", 10: "cow", 11: "diningtable", 12: "dog", 13: "horse", 14: "motorbike", 15: "person", 16: "potted plant", 17: "sheep", 18: "sofa", 19: "train", 20: "tv/monitor", 255: "ignore"}
 if __name__ == "__main__":
-    main()
-    # tags = np.load('/u501/j234li/wsss/pseudolabels/class_indices_1.npy')
-    # pseudolabels = np.load('/u501/j234li/wsss/pseudolabels/pseudolabels_1.npy')
-    # class_names = [CLASS_NAMES[i] for i in tags]
-    # print("Class names: ", class_names)
-    # pseudolabels = torch.from_numpy(pseudolabels).float()
-    # pseudolabels /= 0.05
-    # print(pseudolabels.shape)
-    # pseudolabels = pseudolabels.softmax(dim=2).cpu().numpy()
-    # pil_img = download_image(IMAGE_URL).resize((CANONICAL_SIZE[1], CANONICAL_SIZE[0]))
-    # ref_np = save_reference((pil_img), OUTPUT_DIR/"dino_txt_img.png")
-    # save_overlay(ref_np, pseudolabels, class_names, OUTPUT_DIR/"dino_txt_pseudolabels_")
+    # main()
+    tags = np.load('/u501/j234li/wsss/pseudolabels/class_indices_8.npy')
+    pseudolabels = np.load('/u501/j234li/wsss/pseudolabels/pseudolabels_8.npy')
+    class_names = [CLASS_NAMES[i] for i in tags]
+    print("Class names: ", class_names)
+    pseudolabels = torch.from_numpy(pseudolabels).float()
+    pseudolabels /= 0.05
+    print(pseudolabels.shape)
+    pseudolabels = pseudolabels.softmax(dim=2).cpu().numpy()
+    pil_img = download_image(IMAGE_URL).resize((CANONICAL_SIZE[1], CANONICAL_SIZE[0]))
+    ref_np = save_reference((pil_img), OUTPUT_DIR/"dino_txt_img.png")
+    save_overlay(ref_np, pseudolabels, class_names, OUTPUT_DIR/"dino_txt_pseudolabels_")
