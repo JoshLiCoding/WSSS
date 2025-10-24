@@ -7,11 +7,11 @@ import matplotlib.pyplot as plt
 def calculate_pairwise_affinity(sam_contour, transform_type):
     device = sam_contour.device
 
-    # dilation by 4 - apply 4x4 max pooling using ndimage to maintain spatial dimensions
+    # dilation by 8 - apply 8x8 max pooling using ndimage to maintain spatial dimensions
     sam_contour_cpu = sam_contour.cpu().numpy()
     dilated_contour = np.zeros_like(sam_contour_cpu)
     for i in range(sam_contour_cpu.shape[0]):
-        dilated_contour[i] = ndimage.maximum_filter(sam_contour_cpu[i], size=4)
+        dilated_contour[i] = ndimage.maximum_filter(sam_contour_cpu[i], size=8)
     sam_contour = torch.from_numpy(dilated_contour).to(device)
 
     if transform_type is None:
@@ -75,7 +75,7 @@ def PottsLoss(type, logits, sam_contours_x, sam_contours_y, distance_transform):
         loss_y = loss_y[:, :-1, :] * w_y
     elif type == 'quadratic':
         if distance_transform is None:
-            weighting = 800.0
+            weighting = 500.0
         
         prob = torch.softmax(logits, dim=1)
         

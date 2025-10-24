@@ -8,91 +8,50 @@ from PIL import Image
 from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
-import yaml
-import wandb
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
 from model.dino import DinoWSSS
 from model.scheduler import PolyLR
-from model.dino_txt_full_res import generate_pseudolabels
+from model.dino_txt import generate_pseudolabels
 from utils.dataset import VOCSegmentation, CustomVOCSegmentationTrain, CustomVOCSegmentationVal
 from utils.loss import CrossEntropyLoss, CollisionCrossEntropyLoss, PottsLoss
 from utils.metrics import update_miou
 from vis import vis_train_sample_img, vis_val_sample_img, vis_train_loss, vis_val_loss
 
-def load_config(config_path='config.yaml'):
-    """Load configuration from YAML file"""
-    with open(config_path, 'r') as file:
-        config = yaml.safe_load(file)
-    return config
-
-def print_config(config):
-    """Print configuration parameters in a readable format"""
-    print("=" * 60)
-    print("CONFIGURATION PARAMETERS")
-    print("=" * 60)
-    
-    for section_name, section_params in config.items():
-        print(f"\n{section_name.upper()}:")
-        print("-" * 30)
-        if isinstance(section_params, dict):
-            for key, value in section_params.items():
-                print(f"  {key}: {value}")
-        else:
-            print(f"  {section_params}")
-    
-    print("=" * 60)
-
-# Load configuration
-config = load_config()
+NUM_CLASSES = 21
+BATCH_SIZE = 1
+NUM_EPOCHS = 100
+LEARNING_RATE = 0.0001
+WEIGHT_DECAY = 1e-4
+MOMENTUM = 0.9
+IGNORE_INDEX = 255
+VALIDATION_INTERVAL = 10
+POTTS_TYPE = 'quadratic'
+DISTANCE_TRANSFORM = None
+TRAIN_ONLY = True
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Extract parameters from config
-NUM_CLASSES = config['model']['num_classes']
-BATCH_SIZE = config['training']['batch_size']
-NUM_EPOCHS = config['training']['num_epochs']
-LEARNING_RATE = config['training']['learning_rate']
-WEIGHT_DECAY = config['training']['weight_decay']
-MOMENTUM = config['training']['momentum']
-IGNORE_INDEX = config['training']['ignore_index']
-VALIDATION_INTERVAL = config['training']['validation_interval']
-POTTS_TYPE = config['loss']['potts_type']
-DISTANCE_TRANSFORM = config['loss']['distance_transform']
-TRAIN_ONLY = config['training']['train_only']
-
-# Setup directories and paths
 DIRS = {
-    'output': config['directories']['output'],
-    'checkpoints': config['directories']['checkpoints'],
-    'sam_cache': config['directories']['sam_cache'],
-    'visualizations': config['directories']['visualizations'].format(num_epochs=NUM_EPOCHS)
-}
-
-# Create directories
+    'output': 'output',
+    'checkpoints': 'checkpoints',
+    'sam_cache': 'sam_cache',
+    'visualizations': f'vis_1_img_{NUM_EPOCHS}epochs_ce_potts'
+}   
 for dir_name, dir_path in DIRS.items():
     full_path = os.path.join(DIRS['output'], dir_path) if dir_name != 'output' else dir_path
     os.makedirs(full_path, exist_ok=True)
-
 PATHS = {
-    'model_checkpoint': config['paths']['model_checkpoint'],
-    'model': config['paths']['model'].format(num_epochs=NUM_EPOCHS),
-    'sam_checkpoint': config['sam']['checkpoint_path']
+    'model_checkpoint': os.path.join(DIRS['output'], DIRS['checkpoints'], f'1_img_ce.pt'),
+    'model': os.path.join(DIRS['output'], DIRS['checkpoints'], f'1_img_ce_potts.pt'),
+    'sam_checkpoint': os.path.join('sam_checkpoint', 'sam_vit_h_4b8939.pth')
 }
 
-def generate_sam_contours(voc_train_dataset, start_index=0):
+def generate_sam_contours(voc_train_dataset):
     sam_checkpoint = PATHS['sam_checkpoint']
-    model_type = config['sam']['model_type']
+    model_type = "vit_h"
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint).to(device)
-    mask_generator = SamAutomaticMaskGenerator(
-        model=sam,
-        crop_n_layers=1,
-        points_per_batch=128,
-        pred_iou_thresh=0.8,
-        stability_score_thresh=0.9,
-        box_nms_thresh=0.2)
+    mask_generator = SamAutomaticMaskGenerator(model=sam)
     for i, (image, target) in tqdm(enumerate(voc_train_dataset), desc="Generating SAM contours"):
-        if i < start_index:
-            continue
         image = np.array(image)
         masks = mask_generator.generate(image)
         H, W = image.shape[:2]
@@ -103,46 +62,35 @@ def generate_sam_contours(voc_train_dataset, start_index=0):
             segmentation = mask['segmentation']
             contours_x |= np.logical_xor(segmentation[:, :-1], segmentation[:, 1:]) # shape: (H, W-1)
             contours_y |= np.logical_xor(segmentation[:-1, :], segmentation[1:, :]) # shape: (H-1, W)
-
+        
         np.save(os.path.join(DIRS['output'], DIRS['sam_cache'], f'sam_contours_x_{i}.npy'), contours_x)
         np.save(os.path.join(DIRS['output'], DIRS['sam_cache'], f'sam_contours_y_{i}.npy'), contours_y)
 
     print("All SAM contours generated.")
 
 def main():
-    # Print configuration parameters
-    print_config(config)
-    
-    # Initialize Weights & Biases
-    wandb_config = config['wandb']
-    wandb.init(
-        project=wandb_config['project'],
-        entity=wandb_config['entity'],
-        name=DIRS['visualizations'],
-        config=config  # Log the entire configuration
-    )
-    
     # augmented VOC train set
     voc_train_dataset = VOCSegmentation(
-        config['dataset']['root'],
-        image_set=config['dataset']['train_image_set'],
-        download=config['dataset']['download'],
-        n_images=config['dataset']['n_images']
+        '.',
+        image_set='train',
+        download=False,
+        n_images=1
     )
     voc_val_dataset = VOCSegmentation(
-        config['dataset']['root'],
-        image_set=config['dataset']['val_image_set'],
-        download=config['dataset']['download']
+        '.',
+        image_set='val',
+        download=False
     )
     print(f"Training on {len(voc_train_dataset)} images.")
 
-    # generate_sam_contours(voc_train_dataset, start_index=2135)
-    # generate_pseudolabels(voc_train_dataset, start_index=0)
+    # generate_sam_contours(voc_train_dataset)
+    # generate_pseudolabels(voc_train_dataset, start_index=7096)
 
     train_dataset = CustomVOCSegmentationTrain(
         voc_train_dataset, NUM_CLASSES, 
         os.path.join(DIRS['output'], DIRS['sam_cache']),
-        config['directories']['pseudolabels']
+        'pseudolabels', 
+        start_index=2
     )
     train_loader = DataLoader(
         train_dataset,
@@ -152,16 +100,16 @@ def main():
     val_dataset = CustomVOCSegmentationVal(voc_val_dataset)
 
     model = DinoWSSS(
-        backbone_name=config['model']['backbone_name'],
-        num_transformer_blocks=config['model']['num_transformer_blocks'],
-        num_conv_blocks=config['model']['num_conv_blocks'],
-        out_channels=config['model']['out_channels']
+        backbone_name="dinov3_vitl16",
+        num_transformer_blocks=3,
+        num_conv_blocks=5,
+        out_channels=21
     ).to(device)
     optimizer = torch.optim.SGD(params=[
         {'params': model.transformer_blocks.parameters(), 'lr': LEARNING_RATE},
         {'params': model.conv_blocks.parameters(), 'lr': LEARNING_RATE},
         {'params': model.conv_final.parameters(), 'lr': LEARNING_RATE},
-    ], lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
+    ], lr=LEARNING_RATE, momentum=0.9, weight_decay=WEIGHT_DECAY)
     # scheduler = PolyLR(optimizer, NUM_EPOCHS * len(train_loader), power=0.9)
 
     if os.path.exists(PATHS['model_checkpoint']):
@@ -197,10 +145,10 @@ def main():
             outputs = model(transformed_images)
 
             # unary potential
-            unary_loss = CollisionCrossEntropyLoss(outputs, pseudolabel_logits) # CrossEntropyLoss(outputs, pseudolabel_logits)
+            unary_loss = CrossEntropyLoss(outputs, pseudolabel_logits) # CollisionCrossEntropyLoss(outputs, pseudolabel_logits)
 
             # pairwise potential
-            pairwise_loss = PottsLoss(POTTS_TYPE, outputs, sam_contours_x_batch, sam_contours_y_batch, DISTANCE_TRANSFORM)
+            pairwise_loss = PottsLoss(POTTS_TYPE, outputs, sam_contours_x_batch, sam_contours_y_batch, DISTANCE_TRANSFORM) # torch.tensor(0.0, device=device)
 
             total_loss = unary_loss + pairwise_loss
 
@@ -230,14 +178,6 @@ def main():
             f"Avg Unary: {epoch_unary_losses[-1]:.4f}, "
             f"Avg Pairwise: {epoch_pairwise_losses[-1]:.4f}"
             )
-        
-        # Log training losses to wandb
-        wandb.log({
-            "epoch": epoch + 1,
-            "train/total_loss": epoch_total_losses[-1],
-            "train/unary_loss": epoch_unary_losses[-1],
-            "train/pairwise_loss": epoch_pairwise_losses[-1]
-        })
         
         # validation
         if (epoch + 1) % VALIDATION_INTERVAL == 0 or epoch == NUM_EPOCHS - 1:
@@ -278,13 +218,6 @@ def main():
             
             print(f"Validation mIoU: {avg_miou:.4f}")
             
-            # Log validation mIoU to wandb
-            wandb.log({
-                "epoch": epoch + 1,
-                "val/miou": avg_miou,
-                "val/best_miou": best_miou
-            })
-            
             # Save best model based on validation mIoU
             if avg_miou > best_miou:
                 best_miou = avg_miou
@@ -293,16 +226,8 @@ def main():
                     'model_state_dict': model.state_dict()
                 }, PATHS['model'])
                 print(f"New best model saved! mIoU: {best_miou:.4f} at epoch {best_epoch}")
-                
 
     print(f"\nTraining complete! Best model was at epoch {best_epoch} with mIoU {best_miou:.4f}")
-    
-    # Log final summary to wandb
-    wandb.log({
-        "final/best_miou": best_miou,
-        "final/best_epoch": best_epoch,
-        "final/total_epochs": NUM_EPOCHS
-    })
     
     if os.path.exists(PATHS['model']):
         best_checkpoint = torch.load(PATHS['model'], map_location=device, weights_only=False)
@@ -310,22 +235,14 @@ def main():
         print(f"Best model loaded successfully! Final validation mIoU: {best_miou:.4f}")
     
     vis_output_dir = os.path.join(DIRS['output'], DIRS['visualizations'])
-    for i in range(0, len(voc_train_dataset), config['visualization']['train_sample_interval']):
+    for i in range(0, len(voc_train_dataset), 100):
         vis_train_sample_img(voc_train_dataset, train_dataset, model, i, DISTANCE_TRANSFORM, vis_output_dir)
     vis_train_loss(NUM_EPOCHS, epoch_total_losses, epoch_unary_losses, epoch_pairwise_losses, vis_output_dir)
     
     if not TRAIN_ONLY:
-        for i in range(0, len(voc_val_dataset), config['visualization']['val_sample_interval']):
+        for i in range(0, len(voc_val_dataset), 50):
             vis_val_sample_img(voc_val_dataset, val_dataset, model, i, vis_output_dir)
         vis_val_loss(validation_mious, validation_epochs, vis_output_dir)
-    
-    # Log visualizations to wandb
-    if wandb_config['log_visualizations']:
-        for file in os.listdir(vis_output_dir):
-            if file.endswith('.png'):
-                wandb.log({"plots/visualizations": wandb.Image(os.path.join(vis_output_dir, file))})
-        
-    wandb.finish()
 
 if __name__ == "__main__":
     main()

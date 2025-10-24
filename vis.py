@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 from utils.loss import calculate_pairwise_affinity
+from utils.dataset import voc_cmap
 
 def visualize_soft_probabilities(logits):
     probabilities = logits.softmax(dim=0).detach().numpy()
@@ -15,10 +16,10 @@ def visualize_soft_probabilities(logits):
         print('vis only supports 21 colours')
         return
     
-    cmap = plt.get_cmap('tab20')
-    colors_tab20 = [cmap(i)[:3] for i in np.linspace(0, 1, 20)]
-    additional_color_rgb = (0.3, 0.3, 0.3)
-    colors_array = np.array(colors_tab20 + [additional_color_rgb])
+    # Use VOC color palette instead of tab20
+    voc_colors = voc_cmap(normalized=True)  # Get normalized RGB values [0,1]
+    # VOC palette has 256 colors, we need the first 21 (classes 0-20)
+    colors_array = voc_colors[:21]  # Shape: [21, 3]
 
     # Perform element-wise multiplication: (C, H, W, 1) * (C, 1, 1, 3) -> (C, H, W, 3)
     probabilities_expanded = np.expand_dims(probabilities, axis=-1)
@@ -137,7 +138,7 @@ def vis_val_sample_img(voc_val_dataset, val_dataset, model, index, output_dir='.
     output_vis = voc_val_dataset.decode_target(output_vis)
     
     # Resize model output to original image size
-    output_resized = output 
+    output_resized = output.unsqueeze(0)
     output_resized = torch.nn.functional.interpolate(
         output_resized, size=(img.size[1], img.size[0]), mode='bilinear', align_corners=False
     )[0]

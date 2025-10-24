@@ -1,0 +1,63 @@
+# Training Configuration for DINO WSSS
+# Weakly Supervised Semantic Segmentation using DINO
+
+# Model Parameters
+model:
+  num_classes: 21
+  backbone_name: "dinov3_vitl16"
+  num_transformer_blocks: 3
+  num_conv_blocks: 5
+  out_channels: 21
+
+# Training Parameters
+training:
+  batch_size: 16
+  num_epochs: 30
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  momentum: 0.9
+  ignore_index: 255
+  validation_interval: 10
+  train_only: false
+
+# Loss Parameters
+loss:
+  potts_type: 'quadratic'
+  distance_transform: null
+
+# Dataset Parameters
+dataset:
+  n_images: -1
+  root: '.'
+  train_image_set: 'train'
+  val_image_set: 'val'
+  download: false
+
+# SAM Parameters
+sam:
+  checkpoint_path: 'sam_checkpoint/sam_vit_h_4b8939.pth'
+  model_type: "vit_h"
+
+# Directory Structure
+directories:
+  output: 'output'
+  checkpoints: 'checkpoints'
+  sam_cache: 'sam_cache'
+  pseudolabels: 'pseudolabels'
+  visualizations: 'vis_{num_epochs}epochs_cce_t=0.05_potts_w=500_old_sam'
+
+# File Paths
+paths:
+  model_checkpoint: 'output/checkpoints/10epochs_cce_t=0.05.pt'
+  model: 'output/checkpoints/{num_epochs}epochs_cce_t=0.05_potts_w=500_old_sam.pt'
+
+# Visualization Parameters
+visualization:
+  train_sample_interval: 100
+  val_sample_interval: 50
+
+# Weights & Biases Configuration
+wandb:
+  project: "WSSS"
+  entity: "joshlicoding-university-of-waterloo"
+  log_visualizations: true

@@ -60,11 +60,12 @@ class DinoWSSS(nn.Module):
                 nn.Conv2d(self.backbone_dim, self.backbone_dim, kernel_size=3, padding=1, bias=False),
                 nn.BatchNorm2d(self.backbone_dim),
                 nn.ReLU(inplace=True),
+                nn.Conv2d(self.backbone_dim, self.backbone_dim, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(self.backbone_dim)
             )
             for _ in range(num_conv_blocks)
         ]
         self.conv_blocks = nn.ModuleList(conv_list)
-
         self.conv_final = nn.Conv2d(self.backbone_dim, out_channels, kernel_size=1, padding=0, bias=False)
 
         self.init_weights()
@@ -115,9 +116,7 @@ class DinoWSSS(nn.Module):
         """Forward pass through backbone and segmentation blocks"""
         # Extract features from pretrained backbone
         with torch.no_grad():
-            backbone_features = self.backbone(x)
-        
-        class_token, patch_tokens, register_tokens = self.get_backbone_features(x)
+            class_token, patch_tokens, register_tokens = self.get_backbone_features(x)
         
         tokens = torch.cat([class_token.unsqueeze(1), register_tokens, patch_tokens], dim=1)
         for block in self.transformer_blocks:
@@ -143,6 +142,7 @@ class DinoWSSS(nn.Module):
             identity = patch_tokens_spatial
             patch_tokens_spatial = conv_block(patch_tokens_spatial)
             patch_tokens_spatial = patch_tokens_spatial + identity
+            patch_tokens_spatial = F.relu(patch_tokens_spatial)
         
         # Final classification layer
         output = self.conv_final(patch_tokens_spatial)
