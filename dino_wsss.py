@@ -14,7 +14,7 @@ from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
 from model.dino import DinoWSSS
 from model.scheduler import PolyLR
-from model.dino_txt_full_res import generate_pseudolabels
+from model.dino_txt import generate_pseudolabels
 from utils.dataset import VOCSegmentation, CustomVOCSegmentationTrain, CustomVOCSegmentationVal
 from utils.loss import CrossEntropyLoss, CollisionCrossEntropyLoss, PottsLoss
 from utils.metrics import update_miou
@@ -59,6 +59,7 @@ VALIDATION_INTERVAL = config['training']['validation_interval']
 POTTS_TYPE = config['loss']['potts_type']
 DISTANCE_TRANSFORM = config['loss']['distance_transform']
 TRAIN_ONLY = config['training']['train_only']
+CLASS_NAMES = {0: "background", 1: "aeroplane", 2: "bicycle", 3: "bird", 4: "boat", 5: "bottle", 6: "bus", 7: "car", 8: "cat", 9: "chair", 10: "cow", 11: "diningtable", 12: "dog", 13: "horse", 14: "motorbike", 15: "person", 16: "potted plant", 17: "sheep", 18: "sofa", 19: "train", 20: "tv/monitor", 255: "ignore"}
 
 # Setup directories and paths
 DIRS = {
@@ -83,13 +84,7 @@ def generate_sam_contours(voc_train_dataset, start_index=0):
     sam_checkpoint = PATHS['sam_checkpoint']
     model_type = config['sam']['model_type']
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint).to(device)
-    mask_generator = SamAutomaticMaskGenerator(
-        model=sam,
-        crop_n_layers=1,
-        points_per_batch=128,
-        pred_iou_thresh=0.8,
-        stability_score_thresh=0.9,
-        box_nms_thresh=0.2)
+    mask_generator = SamAutomaticMaskGenerator(model=sam)
     for i, (image, target) in tqdm(enumerate(voc_train_dataset), desc="Generating SAM contours"):
         if i < start_index:
             continue
@@ -136,8 +131,9 @@ def main():
     )
     print(f"Training on {len(voc_train_dataset)} images.")
 
-    # generate_sam_contours(voc_train_dataset, start_index=2135)
-    # generate_pseudolabels(voc_train_dataset, start_index=0)
+    # generate_sam_contours(voc_train_dataset)
+    # generate_pseudolabels(voc_train_dataset)
+    # return
 
     train_dataset = CustomVOCSegmentationTrain(
         voc_train_dataset, NUM_CLASSES, 
@@ -187,9 +183,9 @@ def main():
         running_total_loss = 0.0
         running_unary_loss = 0.0
         running_pairwise_loss = 0.0
-        for i, (transformed_images, pseudolabel_logits, sam_contours_x_batch, sam_contours_y_batch) in enumerate(train_loader):
+        for i, (transformed_images, pseudolabel_probs, sam_contours_x_batch, sam_contours_y_batch) in enumerate(train_loader):
             transformed_images = transformed_images.to(device)
-            pseudolabel_logits = pseudolabel_logits.to(device)
+            pseudolabel_probs = pseudolabel_probs.to(device)
             sam_contours_x_batch = sam_contours_x_batch.to(device)
             sam_contours_y_batch = sam_contours_y_batch.to(device)
 
@@ -197,10 +193,10 @@ def main():
             outputs = model(transformed_images)
 
             # unary potential
-            unary_loss = CollisionCrossEntropyLoss(outputs, pseudolabel_logits) # CrossEntropyLoss(outputs, pseudolabel_logits)
+            unary_loss = CollisionCrossEntropyLoss(outputs, pseudolabel_probs) # CrossEntropyLoss(outputs, pseudolabel_probs)
 
             # pairwise potential
-            pairwise_loss = PottsLoss(POTTS_TYPE, outputs, sam_contours_x_batch, sam_contours_y_batch, DISTANCE_TRANSFORM)
+            pairwise_loss = PottsLoss(POTTS_TYPE, outputs, sam_contours_x_batch, sam_contours_y_batch, DISTANCE_TRANSFORM) # torch.tensor(0.0, device=device)
 
             total_loss = unary_loss + pairwise_loss
 
@@ -272,6 +268,7 @@ def main():
                 else:
                     iou = intersection_counts[cls] / union_counts[cls]
                     ious.append(iou)
+                    print(f"Class {CLASS_NAMES[cls]} mIoU: {iou:.4f}")
             avg_miou = np.mean(ious)
             validation_mious.append(avg_miou)
             validation_epochs.append(epoch + 1)

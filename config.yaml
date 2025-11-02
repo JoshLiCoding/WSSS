@@ -12,8 +12,8 @@ model:
 # Training Parameters
 training:
   batch_size: 16
-  num_epochs: 30
-  learning_rate: 0.0001
+  num_epochs: 10
+  learning_rate: 0.001
   weight_decay: 0.0001
   momentum: 0.9
   ignore_index: 255
@@ -40,16 +40,16 @@ sam:
 
 # Directory Structure
 directories:
-  output: 'output'
+  output: 'output_2'
   checkpoints: 'checkpoints'
   sam_cache: 'sam_cache'
-  pseudolabels: 'pseudolabels'
-  visualizations: 'vis_{num_epochs}epochs_cce_t=0.05_potts_w=500_old_sam'
+  pseudolabels: 'pseudolabels_2'
+  visualizations: 'vis_{num_epochs}epochs_cce_t=0.05'
 
 # File Paths
 paths:
-  model_checkpoint: 'output/checkpoints/10epochs_cce_t=0.05.pt'
-  model: 'output/checkpoints/{num_epochs}epochs_cce_t=0.05_potts_w=500_old_sam.pt'
+  model_checkpoint: 'output_2/checkpoints/none.pt'
+  model: 'output_2/checkpoints/{num_epochs}epochs_cce_t=0.05.pt'
 
 # Visualization Parameters
 visualization:

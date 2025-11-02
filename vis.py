@@ -6,10 +6,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 from utils.loss import calculate_pairwise_affinity
-from utils.dataset import voc_cmap
+from utils.dataset import cmap
 
-def visualize_soft_probabilities(logits):
-    probabilities = logits.softmax(dim=0).detach().numpy()
+def visualize_soft_probabilities(logits, softmax=True):
+    if softmax:
+        probabilities = logits.softmax(dim=0).detach().numpy()
+    else:
+        probabilities = logits.detach().numpy()
     num_classes, _, _ = probabilities.shape
 
     if not num_classes == 21:
@@ -17,7 +20,7 @@ def visualize_soft_probabilities(logits):
         return
     
     # Use VOC color palette instead of tab20
-    voc_colors = voc_cmap(normalized=True)  # Get normalized RGB values [0,1]
+    voc_colors = cmap(normalized=True)  # Get normalized RGB values [0,1]
     # VOC palette has 256 colors, we need the first 21 (classes 0-20)
     colors_array = voc_colors[:21]  # Shape: [21, 3]
 
@@ -28,14 +31,13 @@ def visualize_soft_probabilities(logits):
     
     soft_vis = np.sum(weighted_colors, axis=0)
     soft_vis = np.clip(soft_vis*255, 0, 255).astype(np.uint8)
-    soft_vis_image = Image.fromarray(soft_vis)
-    return soft_vis_image
+    return soft_vis
 
 def vis_train_sample_img(voc_train_dataset, train_dataset, model, index, distance_transform, output_dir='.'):
     device = next(model.parameters()).device
     
     img, gt_mask = voc_train_dataset[index]
-    transformed_img, pseudolabel_logits, sam_contours_x, sam_contours_y = train_dataset[index]
+    transformed_img, pseudolabel_probs, sam_contours_x, sam_contours_y = train_dataset[index]
 
     gt_mask = voc_train_dataset.decode_target(gt_mask)
 
@@ -45,12 +47,12 @@ def vis_train_sample_img(voc_train_dataset, train_dataset, model, index, distanc
         output = model(transformed_img)[0].cpu()
     transformed_img = train_dataset.denormalize(transformed_img[0].cpu()).permute(1, 2, 0)
 
-    soft_pseudolabels = np.array(visualize_soft_probabilities(pseudolabel_logits / 0.05)) # temperature = 0.05
-    pseudolabels_vis = pseudolabel_logits.argmax(0).numpy().astype(np.uint8)
+    soft_pseudolabels = visualize_soft_probabilities(pseudolabel_probs, softmax=False)
+    pseudolabels_vis = pseudolabel_probs.argmax(0).detach().numpy().astype(np.uint8)
     pseudolabels_vis = Image.fromarray(pseudolabels_vis)
     pseudolabels_vis = voc_train_dataset.decode_target(pseudolabels_vis)
 
-    soft_output = np.array(visualize_soft_probabilities(output))
+    soft_output = visualize_soft_probabilities(output)
     output_vis = output.argmax(0).numpy().astype(np.uint8)
     output_vis = Image.fromarray(output_vis)
     output_vis = voc_train_dataset.decode_target(output_vis)
@@ -131,7 +133,7 @@ def vis_val_sample_img(voc_val_dataset, val_dataset, model, index, output_dir='.
     with torch.no_grad():
         output = model(transformed_img)[0].cpu()
     
-    soft_output = np.array(visualize_soft_probabilities(output))
+    soft_output = visualize_soft_probabilities(output)
 
     output_vis = output.argmax(0).numpy().astype(np.uint8)
     output_vis = Image.fromarray(output_vis)

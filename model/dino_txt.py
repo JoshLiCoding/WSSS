@@ -36,11 +36,11 @@ PROMPT_TEMPLATES: Tuple[str, ...] = (
 )
 
 CANONICAL_SIZE = (448, 448)
-CROP_AREAS      = [0.01]
+CROP_AREAS      = [0.01, 0.1, 0.3, 1]
 NUM_CLUSTERS    = 128
-MAX_KMEANS_SAMPLES = 20_000
+MAX_KMEANS_SAMPLES = 10_000
 
-OUTPUT_DIR    = Path("pseudolabels")
+OUTPUT_DIR    = Path("pseudolabels_2")
 DEVICE        = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DINO_EMBED_DIM = 1024
 
@@ -150,7 +150,7 @@ def centroid_zero_shot(centers: torch.Tensor, text_emb: torch.Tensor, class_name
     # return sim.softmax(dim=1).cpu().numpy()
 
 def generate_pseudolabels(dataset, start_index=0):
-    random.seed(0); torch.manual_seed(0)
+    random.seed(0); torch.manual_seed(0); np.random.seed(0)
     model, tokenizer = prepare_model()
     preprocess = make_classification_eval_transform()
 
