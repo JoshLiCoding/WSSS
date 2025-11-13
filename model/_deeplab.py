@@ -59,6 +59,32 @@ class ASPP(nn.Module):
         out = self.project(res)
         return out
 
+class DeepLabHeadV3(nn.Module):
+    def __init__(self, in_channels, num_classes, aspp_dilate):
+        super(DeepLabHeadV3, self).__init__()
+
+        self.aspp = ASPP(in_channels, aspp_dilate)
+
+        self.classifier = nn.Sequential(
+            nn.Conv2d(256, 256, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, num_classes, kernel_size=1)
+        )
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight)
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, feature):
+        output_feature = self.aspp(feature['feature'])
+        segmentation_logits = self.classifier(output_feature)
+        return segmentation_logits
+
+
 class DeepLabHeadV3Plus(nn.Module):
     def __init__(self, in_channels, low_level_channels, num_classes, aspp_dilate):
         super(DeepLabHeadV3Plus, self).__init__()

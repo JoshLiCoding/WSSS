@@ -17,7 +17,7 @@ os.environ["OPENBLAS_NUM_THREADS"] = "64"
 DINOV3_LOCATION = '/u501/j234li/wsss/model/dinov3'
 import sys
 sys.path.append(DINOV3_LOCATION)
-from dinov3.data.transforms import make_classification_eval_transform, make_eval_transform
+from dinov3.data.transforms import make_eval_transform
 
 # --------------------------------------------------------------------------- #
 # Constants                                                                    #
@@ -28,8 +28,7 @@ PROMPT_TEMPLATES: Tuple[str, ...] = (
     "a close-up photo of {}", "a cropped image featuring {}",
 )
 
-CANONICAL_SIZE = (448, 448)
-CROP_AREAS      = [0.01, 0.1, 0.3, 1]
+CANONICAL_SIZE = (224, 224)
 
 DEVICE        = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -59,20 +58,6 @@ def build_text_embeddings(model, tokenizer, class_names: Sequence[str]) -> torch
         agg[c] += embs[i];   cnt[c] += 1
     return F.normalize(agg / cnt.unsqueeze(1), p=2, dim=1)  # [C, D]
 
-# ----------------------------- crop generator ------------------------------ #
-def generate_crops(h: int, w: int) -> List[Tuple[int,int,int,int]]:
-    """Dense sliding-window squares"""
-    crops = []
-    for area in CROP_AREAS:
-        side  = int(round(math.sqrt(area * h * w)))
-        stride = side // 2
-        # extra crop to fill out borders
-        for y in list(range(0, h - side + 1, stride)) + [h-side]:
-            for x in list(range(0, w - side + 1, stride)) + [w-side]:
-                crops.append((x, y, x + side, y + side))
-    print("Generated crops: ", len(crops))
-    return crops
-
 # ---------------------------- feature encoder ------------------------------ #
 def encode_patches(model, img_tensor: torch.Tensor) -> torch.Tensor:
     # returns [1, P, D]
@@ -80,7 +65,6 @@ def encode_patches(model, img_tensor: torch.Tensor) -> torch.Tensor:
     with torch.no_grad(), ctx:
         image_class_tokens, image_patch_tokens, backbone_patch_tokens = model.encode_image_with_patch_tokens(img_tensor)
     return image_patch_tokens
-
 
 # ----------------------- direct cosine similarity on patches ---------------- #
 @torch.no_grad()
@@ -96,98 +80,32 @@ def compute_patch_cosine_similarity(
     C = text_emb.size(0)  # Total classes (foreground + background)
     num_fg = num_foreground_classes
     
-    # Initialize similarity sum and hit counter
-    sim_sum = torch.zeros((C, H, W), device=DEVICE)  # [C, H, W]
-    hit_cnt = torch.zeros((H, W), device=DEVICE)
+    image_tensor = preprocess(pil_image).unsqueeze(0).to(DEVICE)      # [1, 3, *, *]
+    patch_tokens = encode_patches(model, image_tensor)[0]        # [P, D]
+    # Normalize patch tokens for cosine similarity (text_emb is already normalized)
+    patch_tokens_norm = F.normalize(patch_tokens, p=2, dim=1)   # [P, D]
     
-    for (x0, y0, x1, y1) in generate_crops(H, W):
-        crop = pil_image.crop((x0, y0, x1, y1))
-        crop_tensor = preprocess(crop).unsqueeze(0).to(DEVICE)      # [1, 3, *, *]
-        patch_tokens = encode_patches(model, crop_tensor)[0]        # [P, D]
-        
-        # Normalize patch tokens for cosine similarity (text_emb is already normalized)
-        patch_tokens_norm = F.normalize(patch_tokens, p=2, dim=1)   # [P, D]
-        
-        # Compute cosine similarity: [P, D] @ [D, C] = [P, C]
-        # text_emb is already normalized from build_text_embeddings
-        cosine_sim = torch.mm(patch_tokens_norm, text_emb.t())  # [P, C]
-        
-        # Reshape to spatial grid
-        p = int(math.sqrt(patch_tokens.size(0)))                    # √P
-        assert p * p == patch_tokens.size(0), "non-square patch grid"
-        
-        # Reshape to [C, p, p]
-        sim_grid = cosine_sim.t().view(C, p, p)                     # [C, p, p]
-        
-        # Upsample similarity grid to crop size
-        sim_grid_upsampled = F.interpolate(
-            sim_grid.unsqueeze(0), 
-            size=(y1 - y0, x1 - x0),
-            mode="bilinear", 
-            align_corners=False
-        )[0]  # [C, h, w]
-        
-        # Accumulate into full-size map
-        sim_sum[:, y0:y1, x0:x1] += sim_grid_upsampled
-        hit_cnt[y0:y1, x0:x1] += 1
+    # Compute cosine similarity: [P, D] @ [D, C] = [P, C]
+    # text_emb is already normalized from build_text_embeddings
+    cosine_sim = torch.mm(patch_tokens_norm, text_emb.t())  # [P, C]
     
-    # Average across all crops (avoid div-by-0)
-    hit_cnt = torch.clamp(hit_cnt, min=1)
-    sim_avg = sim_sum / hit_cnt.unsqueeze(0)  # [C, H, W]
+    # Reshape to spatial grid
+    p = int(math.sqrt(patch_tokens.size(0)))                    # √P
+    assert p * p == patch_tokens.size(0), "non-square patch grid"
+    
+    # Reshape to [C, p, p]
+    sim_grid = cosine_sim.t().view(C, p, p)                     # [C, p, p]
     
     # Condense background classes: take max over background classes
-    fg_sim = sim_avg[:num_fg]  # [num_fg, H, W]
-    bg_sim_all = sim_avg[num_fg:]  # [num_bg, H, W]
-    bg_sim = torch.max(bg_sim_all, dim=0, keepdim=True).values  # [1, H, W]
+    fg_sim = sim_grid[:num_fg]  # [num_fg, p, p]
+    bg_sim_all = sim_grid[num_fg:]  # [num_bg, p, p]
+    bg_sim = torch.max(bg_sim_all, dim=0, keepdim=True).values  # [1, p, p]
     
-    # Combine: [num_fg + 1, H, W]
+    # Combine: [num_fg + 1, p, p]
     condensed_sim = torch.cat([fg_sim, bg_sim], dim=0)
     
-    # Permute to [H, W, C] for consistency with original format
-    return condensed_sim.permute(1, 2, 0)  # [H, W, num_fg + 1]
-
-def _project_rows_to_simplex(X: np.ndarray) -> np.ndarray:
-    """Project each row of X onto the probability simplex."""
-    Xp = np.copy(X)
-    N, C = Xp.shape
-    for i in range(N):
-        v = Xp[i]
-        if np.all(v >= 0) and np.isclose(v.sum(), 1.0, atol=1e-6):
-            continue
-        u = np.sort(v)[::-1]
-        cssv = np.cumsum(u)
-        rho = np.nonzero(u * (np.arange(1, C + 1)) > (cssv - 1))[0][-1]
-        theta = (cssv[rho] - 1) / (rho + 1.0)
-        Xp[i] = np.maximum(v - theta, 0.0)
-    return Xp
-
-
-def _min_max_normalize(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-    """Min-max normalize each column to [0, 1]."""
-    Xc = np.copy(X)
-    low = np.min(Xc, axis=0)
-    high = np.max(Xc, axis=0)
-    span = np.maximum(high - low, eps)
-    return (Xc - low[np.newaxis, :]) / span[np.newaxis, :]
-
-
-def process_pseudolabels(pix_prob: np.ndarray, temperature: float = 0.05, num_iters: int = 5) -> np.ndarray:
-    """Apply temperature-scaled softmax followed by iterative min-max + simplex projection."""
-    probs = pix_prob.astype(np.float32)
-    scaled = probs / temperature
-    scaled -= np.max(scaled, axis=2, keepdims=True)
-    exp_scaled = np.exp(scaled)
-    probs = exp_scaled / np.sum(exp_scaled, axis=2, keepdims=True)
-
-    h, w, c = probs.shape
-    probs_norm = probs
-    for _ in range(num_iters):
-        flat = probs_norm.reshape(-1, c)
-        flat = _min_max_normalize(flat)
-        flat = _project_rows_to_simplex(flat)
-        probs_norm = flat.reshape(h, w, c)
-
-    return probs_norm
+    # Permute to [p, p, C] for consistency with original format
+    return condensed_sim.permute(1, 2, 0)  # [p, p, num_fg + 1]
 
 def generate_pseudolabels(dataset, dataset_name, start_index=0, end_index=None):
     random.seed(0); torch.manual_seed(0); np.random.seed(0)
@@ -199,7 +117,7 @@ def generate_pseudolabels(dataset, dataset_name, start_index=0, end_index=None):
             "railway", "railroad", "keyboard", "helmet", "cloud", "house", "mountain", "ocean", "road",
             "rock", "street", "valley", "bridge", "sign"
         ]
-        OUTPUT_DIR = Path("pseudolabels_3")
+        OUTPUT_DIR = Path("pseudolabels_full_img")
     elif dataset_name == 'coco':
         CLASS_NAMES = {0: "background", 1: "person", 2: "bicycle", 3: "car", 4: "motorcycle", 5: "airplane", 6: "bus", 7: "train", 8: "truck", 9: "boat", 10: "traffic light", 11: "fire hydrant", 12: "stop sign", 13: "parking meter", 14: "bench", 15: "bird", 16: "cat", 17: "dog", 18: "horse", 19: "sheep", 20: "cow", 
         21: "elephant", 22: "bear", 23: "zebra", 24: "giraffe", 25: "backpack", 26: "umbrella", 27: "handbag", 28: "tie", 29: "suitcase", 30: "frisbee", 31: "skis", 32: "snowboard", 33: "sports ball", 34: "kite", 35: "baseball bat", 36: "baseball glove", 37: "skateboard", 38: "surfboard", 39: "tennis racket", 40: "bottle", 
@@ -213,8 +131,7 @@ def generate_pseudolabels(dataset, dataset_name, start_index=0, end_index=None):
         OUTPUT_DIR = Path("pseudolabels_coco")
 
     model, tokenizer = prepare_model()
-    # Use eval transform without center crop to preserve full spatial coverage for segmentation
-    preprocess = make_eval_transform(crop_size=None, resize_square=True, resize_size=224)
+    preprocess = make_eval_transform(crop_size=None, resize_square=True, resize_size=CANONICAL_SIZE[0])
 
     total_len = len(dataset)
     stop = total_len if end_index is None else min(end_index, total_len)
@@ -226,7 +143,7 @@ def generate_pseudolabels(dataset, dataset_name, start_index=0, end_index=None):
     for i in tqdm(range(start_index, stop), desc="Generating pseudo-labels"):
         img, target = dataset[i]
         # 1. load & canonically resize once for cropping geometry ----------------
-        pil_img = img.resize((CANONICAL_SIZE[1], CANONICAL_SIZE[0]))
+        pil_img = img.resize((CANONICAL_SIZE[1], CANONICAL_SIZE[0]), Image.Resampling.BICUBIC)
         class_indices = np.unique(np.array(target))
         class_indices = class_indices[(class_indices != 255) & (class_indices != 0)] # remove ignore index and class 0 (background)
         class_names = [CLASS_NAMES[i] for i in class_indices]
@@ -239,7 +156,6 @@ def generate_pseudolabels(dataset, dataset_name, start_index=0, end_index=None):
         )  # [H, W, num_fg + 1]
         # Convert to numpy and process
         pix_prob = pix_prob.cpu().numpy()
-        # pix_prob = process_pseudolabels(pix_prob)
         
         OUTPUT_DIR.mkdir(exist_ok=True)
         np.save(OUTPUT_DIR/f'pseudolabels_{i}.npy', pix_prob)

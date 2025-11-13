@@ -5,9 +5,10 @@
 model:
   num_classes: 21
   backbone_name: "dinov3_vitl16"
-  num_transformer_blocks: 3
-  num_conv_blocks: 5
+  num_transformer_blocks: 1
+  num_conv_blocks: 2
   out_channels: 21
+  use_bottleneck: true
 
 # Training Parameters
 training:
@@ -27,6 +28,7 @@ loss:
 
 # Dataset Parameters
 dataset:
+  dataset_name: 'voc'
   n_images: -1
   root: '.'
   train_image_set: 'train'
@@ -40,24 +42,24 @@ sam:
 
 # Directory Structure
 directories:
-  output: 'output_2'
+  output: 'output_4'
   checkpoints: 'checkpoints'
   sam_cache: 'sam_cache'
-  pseudolabels: 'pseudolabels_2'
-  visualizations: 'vis_{num_epochs}epochs_cce_t=0.05'
+  pseudolabels: 'pseudolabels_3'
+  visualizations: 'vis_{num_epochs}epochs_t=0.03'
 
 # File Paths
 paths:
-  model_checkpoint: 'output_2/checkpoints/none.pt'
-  model: 'output_2/checkpoints/{num_epochs}epochs_cce_t=0.05.pt'
+  model_checkpoint: 'output_4/checkpoints/none.pt'
+  model: 'output_4/checkpoints/{num_epochs}epochs_t=0.03.pt'
 
 # Visualization Parameters
 visualization:
-  train_sample_interval: 100
+  train_sample_interval: 50
   val_sample_interval: 50
 
 # Weights & Biases Configuration
 wandb:
   project: "WSSS"
   entity: "joshlicoding-university-of-waterloo"
-  log_visualizations: true
+  log_visualizations: false

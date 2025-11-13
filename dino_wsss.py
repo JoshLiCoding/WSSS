@@ -13,10 +13,11 @@ import wandb
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
 from model.dino import DinoWSSS
+from model.deeplab import deeplabv3_resnet101, deeplabv3plus_resnet101
 from model.scheduler import PolyLR
-from model.dino_txt import generate_pseudolabels
-from utils.dataset import VOCSegmentation, CustomVOCSegmentationTrain, CustomVOCSegmentationVal
-from utils.loss import CrossEntropyLoss, CollisionCrossEntropyLoss, PottsLoss
+from model.dino_txt_full_img import generate_pseudolabels
+from utils.dataset import VOCSegmentation, COCOSegmentation, CustomSegmentationTrain, CustomSegmentationVal
+from utils.loss import CollisionCrossEntropyLoss, PottsLoss
 from utils.metrics import update_miou
 from vis import vis_train_sample_img, vis_val_sample_img, vis_train_loss, vis_val_loss
 
@@ -65,7 +66,6 @@ CLASS_NAMES = {0: "background", 1: "aeroplane", 2: "bicycle", 3: "bird", 4: "boa
 DIRS = {
     'output': config['directories']['output'],
     'checkpoints': config['directories']['checkpoints'],
-    'sam_cache': config['directories']['sam_cache'],
     'visualizations': config['directories']['visualizations'].format(num_epochs=NUM_EPOCHS)
 }
 
@@ -99,8 +99,8 @@ def generate_sam_contours(voc_train_dataset, start_index=0):
             contours_x |= np.logical_xor(segmentation[:, :-1], segmentation[:, 1:]) # shape: (H, W-1)
             contours_y |= np.logical_xor(segmentation[:-1, :], segmentation[1:, :]) # shape: (H-1, W)
 
-        np.save(os.path.join(DIRS['output'], DIRS['sam_cache'], f'sam_contours_x_{i}.npy'), contours_x)
-        np.save(os.path.join(DIRS['output'], DIRS['sam_cache'], f'sam_contours_y_{i}.npy'), contours_y)
+        np.save(os.path.join(config['directories']['sam_cache'], f'sam_contours_x_{i}.npy'), contours_x)
+        np.save(os.path.join(config['directories']['sam_cache'], f'sam_contours_y_{i}.npy'), contours_y)
 
     print("All SAM contours generated.")
 
@@ -118,26 +118,42 @@ def main():
     )
     
     # augmented VOC train set
-    voc_train_dataset = VOCSegmentation(
-        config['dataset']['root'],
-        image_set=config['dataset']['train_image_set'],
-        download=config['dataset']['download'],
-        n_images=config['dataset']['n_images']
+    if config['dataset']['dataset_name'] == 'voc':
+        original_train_dataset = VOCSegmentation(
+            config['dataset']['root'],
+            image_set=config['dataset']['train_image_set'],
+            download=config['dataset']['download'],
+            n_images=config['dataset']['n_images']
     )
-    voc_val_dataset = VOCSegmentation(
-        config['dataset']['root'],
-        image_set=config['dataset']['val_image_set'],
-        download=config['dataset']['download']
-    )
-    print(f"Training on {len(voc_train_dataset)} images.")
+    elif config['dataset']['dataset_name'] == 'coco':
+        original_train_dataset = COCOSegmentation(
+            os.path.join(config['dataset']['root'], 'coco'),
+            image_set=config['dataset']['train_image_set'],
+            download=config['dataset']['download'],
+            n_images=config['dataset']['n_images']
+        )
 
-    # generate_sam_contours(voc_train_dataset)
-    # generate_pseudolabels(voc_train_dataset)
-    # return
+    if config['dataset']['dataset_name'] == 'voc':
+        original_val_dataset = VOCSegmentation(
+            config['dataset']['root'],
+            image_set=config['dataset']['val_image_set'],
+            download=config['dataset']['download']
+        )
+    elif config['dataset']['dataset_name'] == 'coco':
+        original_val_dataset = COCOSegmentation(
+            os.path.join(config['dataset']['root'], 'coco'),
+            image_set=config['dataset']['val_image_set'],
+            download=config['dataset']['download']
+        )
+    
+    # generate_sam_contours(original_train_dataset)
+    generate_pseudolabels(original_train_dataset, config['dataset']['dataset_name'])
+    # 9500, 19000
+    return
 
-    train_dataset = CustomVOCSegmentationTrain(
-        voc_train_dataset, NUM_CLASSES, 
-        os.path.join(DIRS['output'], DIRS['sam_cache']),
+    train_dataset = CustomSegmentationTrain(
+        original_train_dataset, NUM_CLASSES, 
+        config['directories']['sam_cache'],
         config['directories']['pseudolabels']
     )
     train_loader = DataLoader(
@@ -145,19 +161,26 @@ def main():
         batch_size=BATCH_SIZE,
         shuffle=True,
     )
-    val_dataset = CustomVOCSegmentationVal(voc_val_dataset)
-
+    val_dataset = CustomSegmentationVal(original_val_dataset)
     model = DinoWSSS(
         backbone_name=config['model']['backbone_name'],
         num_transformer_blocks=config['model']['num_transformer_blocks'],
         num_conv_blocks=config['model']['num_conv_blocks'],
-        out_channels=config['model']['out_channels']
+        out_channels=config['model']['out_channels'],
+        use_bottleneck=config['model']['use_bottleneck']
     ).to(device)
     optimizer = torch.optim.SGD(params=[
         {'params': model.transformer_blocks.parameters(), 'lr': LEARNING_RATE},
         {'params': model.conv_blocks.parameters(), 'lr': LEARNING_RATE},
         {'params': model.conv_final.parameters(), 'lr': LEARNING_RATE},
     ], lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
+    # scheduler = PolyLR(optimizer, NUM_EPOCHS * len(train_loader), power=0.9)
+
+    # model = deeplabv3_resnet101(NUM_CLASSES).to(device)
+    # optimizer = torch.optim.SGD(params=[
+    #     {'params': model.backbone.parameters(), 'lr': LEARNING_RATE},
+    #     {'params': model.classifier.parameters(), 'lr': LEARNING_RATE},
+    # ], lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
     # scheduler = PolyLR(optimizer, NUM_EPOCHS * len(train_loader), power=0.9)
 
     if os.path.exists(PATHS['model_checkpoint']):
@@ -183,8 +206,9 @@ def main():
         running_total_loss = 0.0
         running_unary_loss = 0.0
         running_pairwise_loss = 0.0
-        for i, (transformed_images, pseudolabel_probs, sam_contours_x_batch, sam_contours_y_batch) in enumerate(train_loader):
+        for i, (transformed_images, targets, pseudolabel_probs, sam_contours_x_batch, sam_contours_y_batch) in enumerate(train_loader):
             transformed_images = transformed_images.to(device)
+            targets = targets.to(device)
             pseudolabel_probs = pseudolabel_probs.to(device)
             sam_contours_x_batch = sam_contours_x_batch.to(device)
             sam_contours_y_batch = sam_contours_y_batch.to(device)
@@ -193,10 +217,10 @@ def main():
             outputs = model(transformed_images)
 
             # unary potential
-            unary_loss = CollisionCrossEntropyLoss(outputs, pseudolabel_probs) # CrossEntropyLoss(outputs, pseudolabel_probs)
+            unary_loss = CollisionCrossEntropyLoss(outputs, pseudolabel_probs) # torch.nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)(outputs, targets)
 
             # pairwise potential
-            pairwise_loss = PottsLoss(POTTS_TYPE, outputs, sam_contours_x_batch, sam_contours_y_batch, DISTANCE_TRANSFORM) # torch.tensor(0.0, device=device)
+            pairwise_loss = torch.tensor(0.0, device=device) # PottsLoss(POTTS_TYPE, outputs, sam_contours_x_batch, sam_contours_y_batch, DISTANCE_TRANSFORM) # torch.tensor(0.0, device=device)
 
             total_loss = unary_loss + pairwise_loss
 
@@ -307,13 +331,13 @@ def main():
         print(f"Best model loaded successfully! Final validation mIoU: {best_miou:.4f}")
     
     vis_output_dir = os.path.join(DIRS['output'], DIRS['visualizations'])
-    for i in range(0, len(voc_train_dataset), config['visualization']['train_sample_interval']):
-        vis_train_sample_img(voc_train_dataset, train_dataset, model, i, DISTANCE_TRANSFORM, vis_output_dir)
+    for i in range(0, len(original_train_dataset), config['visualization']['train_sample_interval']):
+        vis_train_sample_img(original_train_dataset, train_dataset, model, i, DISTANCE_TRANSFORM, vis_output_dir)
     vis_train_loss(NUM_EPOCHS, epoch_total_losses, epoch_unary_losses, epoch_pairwise_losses, vis_output_dir)
     
     if not TRAIN_ONLY:
-        for i in range(0, len(voc_val_dataset), config['visualization']['val_sample_interval']):
-            vis_val_sample_img(voc_val_dataset, val_dataset, model, i, vis_output_dir)
+        for i in range(0, len(original_val_dataset), config['visualization']['val_sample_interval']):
+            vis_val_sample_img(original_val_dataset, val_dataset, model, i, vis_output_dir)
         vis_val_loss(validation_mious, validation_epochs, vis_output_dir)
     
     # Log visualizations to wandb

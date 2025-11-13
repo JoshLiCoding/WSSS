@@ -14,17 +14,10 @@ def visualize_soft_probabilities(logits, softmax=True):
     else:
         probabilities = logits.detach().numpy()
     num_classes, _, _ = probabilities.shape
-
-    if not num_classes == 21:
-        print('vis only supports 21 colours')
-        return
     
-    # Use VOC color palette instead of tab20
-    voc_colors = cmap(normalized=True)  # Get normalized RGB values [0,1]
-    # VOC palette has 256 colors, we need the first 21 (classes 0-20)
-    colors_array = voc_colors[:21]  # Shape: [21, 3]
+    colors_array = cmap(normalized=True)  # Get normalized RGB values [0,1]
+    colors_array = colors_array[:num_classes]  # Shape: [num_classes, 3]
 
-    # Perform element-wise multiplication: (C, H, W, 1) * (C, 1, 1, 3) -> (C, H, W, 3)
     probabilities_expanded = np.expand_dims(probabilities, axis=-1)
     colors_reshaped = colors_array[:, np.newaxis, np.newaxis, :]
     weighted_colors = probabilities_expanded * colors_reshaped
@@ -33,13 +26,13 @@ def visualize_soft_probabilities(logits, softmax=True):
     soft_vis = np.clip(soft_vis*255, 0, 255).astype(np.uint8)
     return soft_vis
 
-def vis_train_sample_img(voc_train_dataset, train_dataset, model, index, distance_transform, output_dir='.'):
+def vis_train_sample_img(original_train_dataset, train_dataset, model, index, distance_transform, output_dir='.'):
     device = next(model.parameters()).device
     
-    img, gt_mask = voc_train_dataset[index]
-    transformed_img, pseudolabel_probs, sam_contours_x, sam_contours_y = train_dataset[index]
+    img, gt_mask = original_train_dataset[index]
+    transformed_img, target, pseudolabel_probs, sam_contours_x, sam_contours_y = train_dataset[index]
 
-    gt_mask = voc_train_dataset.decode_target(gt_mask)
+    gt_mask = original_train_dataset.decode_target(gt_mask)
 
     model.eval()
     transformed_img = transformed_img.unsqueeze(0).to(device)
@@ -50,12 +43,12 @@ def vis_train_sample_img(voc_train_dataset, train_dataset, model, index, distanc
     soft_pseudolabels = visualize_soft_probabilities(pseudolabel_probs, softmax=False)
     pseudolabels_vis = pseudolabel_probs.argmax(0).detach().numpy().astype(np.uint8)
     pseudolabels_vis = Image.fromarray(pseudolabels_vis)
-    pseudolabels_vis = voc_train_dataset.decode_target(pseudolabels_vis)
+    pseudolabels_vis = original_train_dataset.decode_target(pseudolabels_vis)
 
     soft_output = visualize_soft_probabilities(output)
     output_vis = output.argmax(0).numpy().astype(np.uint8)
     output_vis = Image.fromarray(output_vis)
-    output_vis = voc_train_dataset.decode_target(output_vis)
+    output_vis = original_train_dataset.decode_target(output_vis)
     
     fig, axes = plt.subplots(8, 2, figsize=(8, 24))
     
@@ -120,13 +113,13 @@ def vis_train_sample_img(voc_train_dataset, train_dataset, model, index, distanc
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-def vis_val_sample_img(voc_val_dataset, val_dataset, model, index, output_dir='.'):
+def vis_val_sample_img(original_val_dataset, val_dataset, model, index, output_dir='.'):
     device = next(model.parameters()).device
     
-    img, gt_mask = voc_val_dataset[index]
+    img, gt_mask = original_val_dataset[index]
     transformed_img, _ = val_dataset[index]
 
-    gt_mask = voc_val_dataset.decode_target(gt_mask)
+    gt_mask = original_val_dataset.decode_target(gt_mask)
     
     model.eval()
     transformed_img = transformed_img.unsqueeze(0).to(device)
@@ -137,7 +130,7 @@ def vis_val_sample_img(voc_val_dataset, val_dataset, model, index, output_dir='.
 
     output_vis = output.argmax(0).numpy().astype(np.uint8)
     output_vis = Image.fromarray(output_vis)
-    output_vis = voc_val_dataset.decode_target(output_vis)
+    output_vis = original_val_dataset.decode_target(output_vis)
     
     # Resize model output to original image size
     output_resized = output.unsqueeze(0)
@@ -146,7 +139,7 @@ def vis_val_sample_img(voc_val_dataset, val_dataset, model, index, output_dir='.
     )[0]
     output_resized_vis = output_resized.argmax(0).numpy().astype(np.uint8)
     output_resized_vis = Image.fromarray(output_resized_vis)
-    output_resized_vis = voc_val_dataset.decode_target(output_resized_vis)
+    output_resized_vis = original_val_dataset.decode_target(output_resized_vis)
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
     axes[0, 0].imshow(img)

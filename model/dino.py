@@ -15,6 +15,7 @@ sys.path.append(DINOV3_LOCATION)
 from dinov3.layers import SelfAttentionBlock, SwiGLUFFN
 from dinov3.models.vision_transformer import init_weights_vit
 from dinov3.utils import named_apply
+from model.resnet import Bottleneck
 
 
 class DinoWSSS(nn.Module):
@@ -25,11 +26,13 @@ class DinoWSSS(nn.Module):
         num_conv_blocks: int = 3,
         out_channels: int = 21,
         transformer_drop_path: float = 0.0,
+        use_bottleneck: bool = False,
     ):
         super().__init__()
 
         self.num_transformer_blocks = num_transformer_blocks
         self.num_conv_blocks = num_conv_blocks
+        self.use_bottleneck = use_bottleneck
 
         self.backbone = self._load_pretrained_backbone(backbone_name)
         self.backbone_dim = self.backbone.embed_dim
@@ -55,18 +58,37 @@ class DinoWSSS(nn.Module):
         self.transformer_blocks = nn.ModuleList(block_list)
         self.ln = nn.LayerNorm(self.backbone_dim)
 
-        conv_list = [
-            nn.Sequential(
-                nn.Conv2d(self.backbone_dim, self.backbone_dim, kernel_size=3, padding=1, bias=False),
-                nn.BatchNorm2d(self.backbone_dim),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(self.backbone_dim, self.backbone_dim, kernel_size=3, padding=1, bias=False),
-                nn.BatchNorm2d(self.backbone_dim)
-            )
-            for _ in range(num_conv_blocks)
-        ]
+        if use_bottleneck:
+            # Use bottleneck blocks from resnet.py
+            # Bottleneck expansion is 4, so planes = backbone_dim // 4 to get output of backbone_dim
+            planes = self.backbone_dim // Bottleneck.expansion
+            conv_list = [
+                Bottleneck(
+                    inplanes=self.backbone_dim,
+                    planes=planes,
+                    stride=1,
+                    downsample=None,
+                    groups=1,
+                    base_width=64,
+                    dilation=1,
+                    norm_layer=nn.BatchNorm2d
+                )
+                for _ in range(num_conv_blocks)
+            ]
+        else:
+            # Use basic blocks (original implementation)
+            conv_list = [
+                nn.Sequential(
+                    nn.Conv2d(self.backbone_dim, self.backbone_dim, kernel_size=3, padding=1, bias=False),
+                    nn.BatchNorm2d(self.backbone_dim),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(self.backbone_dim, self.backbone_dim, kernel_size=3, padding=1, bias=False),
+                    nn.BatchNorm2d(self.backbone_dim)
+                )
+                for _ in range(num_conv_blocks)
+            ]
         self.conv_blocks = nn.ModuleList(conv_list)
-        self.conv_final = nn.Conv2d(self.backbone_dim, out_channels, kernel_size=1, padding=0, bias=False)
+        self.conv_final = nn.Conv2d(self.backbone_dim, out_channels, kernel_size=1, padding=0, bias=True)
 
         self.init_weights()
 
@@ -99,6 +121,7 @@ class DinoWSSS(nn.Module):
                         nn.init.constant_(m.bias, 0)
         
         nn.init.kaiming_normal_(self.conv_final.weight, mode='fan_out', nonlinearity='relu')
+        nn.init.constant_(self.conv_final.bias, 0)
     
     def get_backbone_features(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         tokens = self.backbone.get_intermediate_layers(
@@ -139,10 +162,15 @@ class DinoWSSS(nn.Module):
 
         # Process through conv blocks
         for conv_block in self.conv_blocks:
-            identity = patch_tokens_spatial
-            patch_tokens_spatial = conv_block(patch_tokens_spatial)
-            patch_tokens_spatial = patch_tokens_spatial + identity
-            patch_tokens_spatial = F.relu(patch_tokens_spatial)
+            if self.use_bottleneck:
+                # Bottleneck block already includes residual connection and ReLU
+                patch_tokens_spatial = conv_block(patch_tokens_spatial)
+            else:
+                # Basic block: add residual connection and ReLU manually
+                identity = patch_tokens_spatial
+                patch_tokens_spatial = conv_block(patch_tokens_spatial)
+                patch_tokens_spatial = patch_tokens_spatial + identity
+                patch_tokens_spatial = F.relu(patch_tokens_spatial)
         
         # Final classification layer
         output = self.conv_final(patch_tokens_spatial)

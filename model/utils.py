@@ -35,7 +35,7 @@ class SimpleSegmentationModel(nn.Module):
         input_shape = x.shape[-2:]
         features = self.backbone(x)
         x = self.classifier(features)
-        x = F.interpolate(x, size=input_shape, mode='bilinear', align_corners=False) # upsample 4x
+        x = F.interpolate(x, size=input_shape, mode='bilinear', align_corners=False) # upsample
         return x
 
 class ClassificationAndSegmentationModel(nn.Module):

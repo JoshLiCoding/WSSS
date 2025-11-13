@@ -262,7 +262,7 @@ class COCOSegmentation(data.Dataset):
         """Decode semantic mask to RGB image"""
         return cls.cmap[mask]
 
-class CustomVOCSegmentationTrain(Dataset):
+class CustomSegmentationTrain(Dataset):
     def __init__(self, dataset, num_classes, sam_cache_path, pseudolabels_path, start_index=0):
         self.dataset = dataset
         self.num_classes = num_classes
@@ -280,40 +280,110 @@ class CustomVOCSegmentationTrain(Dataset):
         pseudolabels = np.load(os.path.join(self.pseudolabels_path, f'pseudolabels_{idx}.npy'))
         class_indices = np.load(os.path.join(self.pseudolabels_path, f'class_indices_{idx}.npy'))
 
+        # target_array = np.array(target, dtype=np.int64)
+        # target_tensor = torch.from_numpy(target_array)
+        # H, W = target_tensor.shape
+        # sanitized_target = target_tensor.clone()
+        # valid_mask = (sanitized_target >= 0) & (sanitized_target < self.num_classes)
+        # sanitized_target[~valid_mask] = 0  # route invalid labels (e.g., 255) to background
+        # full_probs = torch.nn.functional.one_hot(sanitized_target.long(), num_classes=self.num_classes)
+        # full_probs = full_probs.permute(2, 0, 1).float()
+
         # Convert pseudolabels to torch tensor and permute to (C, H, W)
         pseudolabels_tensor = torch.from_numpy(pseudolabels).float().permute(2, 0, 1)
         pseudolabels_tensor = F.interpolate(pseudolabels_tensor.unsqueeze(0), size=(image.size[1], image.size[0]), mode='bilinear', align_corners=False)[0]
-
         C, H, W = pseudolabels_tensor.shape
 
         # Softmax with temperature
-        t = 0.05
+        t = 0.03
         pseudolabels_probs = torch.softmax(pseudolabels_tensor / t, dim=0)
         
+        # ================================================================ #
         # Normalize using min-max normalization
-        pseudolabels_flat = pseudolabels_probs.view(C, -1)
-        min_vals = pseudolabels_flat.min(dim=1, keepdim=True)[0]  
-        max_vals = pseudolabels_flat.max(dim=1, keepdim=True)[0]
-        pseudolabels_flat = (pseudolabels_flat - min_vals) / (max_vals - min_vals + 1e-8)
-        pseudolabels_probs = pseudolabels_flat.view(C, H, W)
+        # pseudolabels_flat = pseudolabels_probs.view(C, -1)
+        # min_vals = pseudolabels_flat.min(dim=1, keepdim=True)[0]  
+        # max_vals = pseudolabels_flat.max(dim=1, keepdim=True)[0]
+        # pseudolabels_flat = (pseudolabels_flat - min_vals) / (max_vals - min_vals + 1e-8)
+        # pseudolabels_probs = pseudolabels_flat.view(C, H, W)
 
-        # Renormalize to sum to 1
-        pseudolabels_probs = pseudolabels_probs / pseudolabels_probs.sum(dim=0)
+        # # Renormalize to sum to 1 (add epsilon to prevent division by zero)
+        # pseudolabels_probs = pseudolabels_probs / (pseudolabels_probs.sum(dim=0, keepdim=True) + 1e-8)
+        # ================================================================ #
 
-        # Pad to full shape
+        # ================================================================ #
+        # def project_rows_to_simplex(X):
+        #     """
+        #     Projects each row of X to the probability simplex (L2 projection).
+        #     Implements the algorithm from Wang & Carreira-Perpinan.
+            
+        #     Args:
+        #         X: numpy array of shape (N, C) where each row is a point
+        #     Returns:
+        #         Xp: array of shape (N, C) with each row projected to simplex
+        #     """
+        #     Xp = np.copy(X)
+        #     N, C = Xp.shape
+        #     for i in range(N):
+        #         v = Xp[i]
+        #         if v.sum() == 1 and np.all(v >= 0):
+        #             continue
+        #         # sort descending
+        #         u = np.sort(v)[::-1]
+        #         cssv = np.cumsum(u)
+        #         rho = np.nonzero(u * np.arange(1, C+1) > (cssv - 1))[0][-1]
+        #         theta = (cssv[rho] - 1) / (rho + 1.0)
+        #         w = np.maximum(v - theta, 0.0)
+        #         Xp[i] = w
+        #     return Xp
+
+        # def min_max_normalize(X, eps=1e-12):
+        #     """
+        #     Min-max normalize each column (class) to [0, 1].
+            
+        #     Args:
+        #         X: numpy array of shape (N, C) where columns are normalized
+        #     Returns:
+        #         Xc: array of shape (N, C) with each column in [0, 1]
+        #     """
+        #     Xc = X.copy()
+        #     low = np.min(Xc, axis=0)
+        #     high = np.max(Xc, axis=0)
+        #     span = np.maximum(high - low, eps)
+        #     Xc = (Xc - low[np.newaxis, :]) / span[np.newaxis, :]
+        #     return Xc
+
+        # # Iterative normalization: min-max + simplex projection
+        # pseudolabels_np = pseudolabels_probs.cpu().numpy()  # (C, H, W)
+        # pseudolabels_np = pseudolabels_np.transpose(1, 2, 0)  # (H, W, C)
+        # for i in range(5):
+        #     # Reshape to (H*W, C) - each row is a pixel with C class probabilities
+        #     pseudolabels_flat = pseudolabels_np.reshape(-1, C)
+        #     # Min-max normalize each class (column)
+        #     pseudolabels_flat = min_max_normalize(pseudolabels_flat)
+        #     # Project each pixel (row) to probability simplex
+        #     pseudolabels_flat = project_rows_to_simplex(pseudolabels_flat)
+        #     # Reshape back to (H, W, C)
+        #     pseudolabels_np = pseudolabels_flat.reshape(H, W, C)
+        
+        # # Convert back to torch and transpose to (C, H, W)
+        # pseudolabels_probs = torch.from_numpy(pseudolabels_np.transpose(2, 0, 1)).float()      
+        # ================================================================ #
+
         full_probs = torch.zeros((self.num_classes, H, W), dtype=torch.float32)
         for i, class_idx in enumerate(class_indices):
-            full_probs[class_idx] = pseudolabels_probs[i]
+            full_probs[class_idx] = pseudolabels_probs[i]  # Use normalized probs, not raw logits
         full_probs[0] = pseudolabels_probs[len(class_indices)]  # background class
 
         # RandomResizedCrop
         i, j, h, w = transforms.RandomResizedCrop.get_params(image, scale=(0.5, 1.5), ratio=(3. / 4., 4. / 3.))
         image = transforms.functional.crop(image, i, j, h, w)
+        target = transforms.functional.crop(target, i, j, h, w)
         sam_contours_x = transforms.functional.crop(Image.fromarray(sam_contours_x), i, j, h, w-1)
         sam_contours_y = transforms.functional.crop(Image.fromarray(sam_contours_y), i, j, h-1, w)
         full_probs = transforms.functional.crop(full_probs, i, j, h, w)
 
         image = transforms.functional.resize(image, (RESIZE_SIZE, RESIZE_SIZE), interpolation=Image.BILINEAR)
+        target = transforms.functional.resize(target, (RESIZE_SIZE, RESIZE_SIZE), interpolation=Image.NEAREST)
         sam_contours_x = transforms.functional.resize(sam_contours_x, (RESIZE_SIZE, RESIZE_SIZE - 1), interpolation=Image.NEAREST)
         sam_contours_y = transforms.functional.resize(sam_contours_y, (RESIZE_SIZE - 1, RESIZE_SIZE), interpolation=Image.NEAREST)
         full_probs = transforms.functional.resize(full_probs, (RESIZE_SIZE, RESIZE_SIZE), interpolation=Image.BILINEAR)
@@ -321,6 +391,7 @@ class CustomVOCSegmentationTrain(Dataset):
         # RandomHorizontalFlip
         if torch.rand(1) < 0.5:
             image = transforms.functional.hflip(image)
+            target = transforms.functional.hflip(target)
             sam_contours_x = transforms.functional.hflip(sam_contours_x)
             sam_contours_y = transforms.functional.hflip(sam_contours_y)
             full_probs = transforms.functional.hflip(full_probs)
@@ -331,20 +402,21 @@ class CustomVOCSegmentationTrain(Dataset):
 
         # ToTensor
         image_tensor = transforms.ToTensor()(image)
+        target_tensor = torch.from_numpy(np.array(target, dtype=np.int64))
         sam_contours_x_tensor = transforms.ToTensor()(np.array(sam_contours_x)).squeeze().float()
         sam_contours_y_tensor = transforms.ToTensor()(np.array(sam_contours_y)).squeeze().float()
 
         # Normalize only image
         image_tensor = transforms.Normalize(MEAN, STD)(image_tensor)
 
-        return image_tensor, full_probs, sam_contours_x_tensor, sam_contours_y_tensor
+        return image_tensor, target_tensor, full_probs, sam_contours_x_tensor, sam_contours_y_tensor
 
     def denormalize(self, tensor):
         for t, m, s in zip(tensor, MEAN, STD):
             t.mul_(s).add_(m)
         return tensor
 
-class CustomVOCSegmentationVal(Dataset):
+class CustomSegmentationVal(Dataset):
     def __init__(self, dataset):
         self.dataset = dataset
         
