@@ -14,7 +14,9 @@ from ultralytics import FastSAM
 import ultralytics
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
-from model.dino import DinoWSSS
+import clip
+
+from model.clip import ClipWSSS
 from model.deeplab import deeplabv3_resnet101, deeplabv3plus_resnet101
 from model.scheduler import PolyLR
 from model.dino_txt_full_img import generate_pseudolabels_batch, build_text_embeddings, get_class_names_from_config
@@ -29,9 +31,7 @@ from utils.sam import (
     generate_color_diff_contours_batch,
 )
 from utils.vis import vis_train_sample_img, vis_val_sample_img, vis_train_loss, vis_val_loss
-import sys
-DINOV3_LOCATION = '/u501/j234li/wsss/model/dinov3'
-sys.path.append(DINOV3_LOCATION)
+
 
 def load_config(config_path='config.yaml'):
     """Load configuration from YAML file"""
@@ -164,34 +164,26 @@ def main():
         )
         print("SAM model initialized for automatic mask generation")
     
-    # Initialize DinoTxt model and tokenizer for pseudolabel generation
-    text_model, tokenizer = torch.hub.load(
-        DINOV3_LOCATION,
-        'dinov3_vitl16_dinotxt_tet1280d20h24l', 
-        source='local',
-        weights=os.path.join(DINOV3_LOCATION, 'weights', 'dinov3_vitl16_dinotxt_vision_head_and_text_encoder-a442d8f5.pth'), 
-        backbone_weights=os.path.join(DINOV3_LOCATION, 'weights', 'dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth')
-    )
-    text_model = text_model.to(device)
-    text_model.eval()
-    
+    clip_model, _ = clip.load(config["model"]["clip_model_name"], device=device, jit=False)
+    clip_model = clip_model.float()
+    clip_model.eval()
+
     # Precompute text embeddings for all classes (once before training)
     print("Precomputing text embeddings for all classes...")
     all_fg_class_names, background_class_names, num_all_fg, num_bg = get_class_names_from_config(config)
     all_class_names = all_fg_class_names + background_class_names
-    text_emb_all = build_text_embeddings(text_model, tokenizer, all_class_names, device=device)  # [num_all_classes, D]
+    text_emb_all = build_text_embeddings(clip_model, all_class_names, device=device)
     print(f"Text embeddings computed: shape {text_emb_all.shape}")
     
-    model = DinoWSSS(
-        backbone_name=config['model']['backbone_name'],
-        num_transformer_blocks=config['model']['num_transformer_blocks'],
-        num_conv_blocks=config['model']['num_conv_blocks'],
-        out_channels=config['model']['out_channels'],
-        use_bottleneck=config['model']['use_bottleneck'],
-        use_transpose_conv=config['model']['use_transpose_conv']
+    model = ClipWSSS(
+        clip_model,
+        num_transformer_blocks=config["model"]["num_transformer_blocks"],
+        num_conv_blocks=config["model"]["num_conv_blocks"],
+        out_channels=config["model"]["out_channels"],
+        use_bottleneck=config["model"]["use_bottleneck"],
+        use_transpose_conv=config["model"]["use_transpose_conv"],
     ).to(device)
-    model.backbone.eval()
-    model.dinotxt_head.eval()
+    model.visual.eval()
 
     optimizer_params = [
         {'params': model.transformer_blocks.parameters(), 'lr': LEARNING_RATE},
@@ -232,8 +224,7 @@ def main():
     
     for epoch in tqdm(range(NUM_EPOCHS), desc="Training epochs"):
         model.train()
-        model.backbone.eval()
-        model.dinotxt_head.eval()
+        model.visual.eval()
         
         running_total_loss = 0.0
         running_unary_loss = 0.0
@@ -243,15 +234,13 @@ def main():
 
             optimizer.zero_grad()
             
-            # Forward pass through model to get segmentation and dino.txt patch tokens
             model_outputs = model(transformed_images)
-            segmentations = model_outputs['seg']
-            dinotxt_patch_tokens = model_outputs['dinotxt']  # [B, P, D]
-            
-            # Generate pseudolabels from dino.txt patch tokens (batch processing)
+            segmentations = model_outputs["seg"]
+            clip_patch_tokens = model_outputs["clip"]
+
             with torch.no_grad():
                 pseudolabels_batch, class_indices_batch = generate_pseudolabels_batch(
-                    dinotxt_patch_tokens, targets, text_emb_all, num_all_fg, num_bg
+                    clip_patch_tokens, targets, text_emb_all, num_all_fg, num_bg
                 )
             
             # Convert pseudolabels to tensor format matching segmentation output

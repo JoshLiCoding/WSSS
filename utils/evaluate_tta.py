@@ -20,12 +20,11 @@ except ImportError:
 # Add parent directory to path to allow imports from project root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from model.dino import DinoWSSS
+import clip
+
+from model.clip import ClipWSSS
 from utils.dataset import VOCSegmentation, COCOSegmentation, CustomSegmentationValTTA, MEAN, STD
 from utils.metrics import update_miou, test_time_augmentation_inference
-
-DINOV3_LOCATION = '/u501/j234li/wsss/model/dinov3'
-sys.path.append(DINOV3_LOCATION) 
 
 VOC_CLASS_NAMES = {
     0: "background", 1: "aeroplane", 2: "bicycle", 3: "bird", 4: "boat",
@@ -55,7 +54,7 @@ COCO_CLASS_NAMES = {
     79: "hair drier", 80: "toothbrush", 255: "ignore"
 }
 
-BASE_SIZE = (448, 448)
+BASE_SIZE = (224, 224)
 DEFAULT_TTA_SCALES = [4.0]
 
 
@@ -149,14 +148,15 @@ def main():
 
     val_dataset = CustomSegmentationValTTA(original_val_dataset)
 
-    # Initialize model
-    model = DinoWSSS(
-        backbone_name=config['model']['backbone_name'],
-        num_transformer_blocks=config['model']['num_transformer_blocks'],
-        num_conv_blocks=config['model']['num_conv_blocks'],
-        out_channels=config['model']['out_channels'],
-        use_bottleneck=config['model']['use_bottleneck'],
-        use_transpose_conv=config['model']['use_transpose_conv']
+    clip_model, _ = clip.load(config["model"]["clip_model_name"], device=device, jit=False)
+    clip_model = clip_model.float()
+    model = ClipWSSS(
+        clip_model,
+        num_transformer_blocks=config["model"]["num_transformer_blocks"],
+        num_conv_blocks=config["model"]["num_conv_blocks"],
+        out_channels=config["model"]["out_channels"],
+        use_bottleneck=config["model"]["use_bottleneck"],
+        use_transpose_conv=config["model"]["use_transpose_conv"],
     ).to(device)
 
     print(f"Loading checkpoint from {args.checkpoint}...")

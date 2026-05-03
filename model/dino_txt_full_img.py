@@ -7,6 +7,7 @@ from typing import Sequence, List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+import clip
 import torch, torch.nn.functional as F
 from PIL import Image
 from torchvision.transforms import functional as TF
@@ -29,6 +30,7 @@ PROMPT_TEMPLATES: Tuple[str, ...] = (
     "a close-up photo of {}", "a cropped image featuring {}",
 )
 
+# Align with CLIP / training resize (see utils.dataset.RESIZE_SIZE).
 CANONICAL_SIZE = (224, 224)
 
 DEVICE        = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -37,16 +39,15 @@ DEVICE        = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ----------------------------- text embeddings ----------------------------- #
 @torch.no_grad()
-def build_text_embeddings(model, tokenizer, class_names: Sequence[str], device=None) -> torch.Tensor:
+def build_text_embeddings(model, class_names: Sequence[str], device=None) -> torch.Tensor:
     """
-    Build text embeddings for given class names.
-    
+    Build text embeddings for given class names (OpenAI CLIP text encoder).
+
     Args:
-        model: Text encoder model
-        tokenizer: Tokenizer for text encoding
+        model: CLIP model with encode_text
         class_names: List of class names
         device: Device to run on (if None, uses DEVICE constant)
-    
+
     Returns:
         Normalized text embeddings [C, D] where C is number of classes
     """
@@ -56,9 +57,9 @@ def build_text_embeddings(model, tokenizer, class_names: Sequence[str], device=N
     for c_idx, name in enumerate(class_names):
         for tpl in PROMPT_TEMPLATES:
             prompts.append(tpl.format(name))
-            owners .append(c_idx)
-    toks  = tokenizer.tokenize(prompts).to(device)
-    embs  = model.encode_text(toks)[:, 1024:]             # [N, D]
+            owners.append(c_idx)
+    toks = clip.tokenize(prompts, truncate=True).to(device)
+    embs = model.encode_text(toks).float()
     C, D  = len(class_names), embs.size(1)
     agg   = torch.zeros(C, D, device=embs.device)
     cnt   = torch.zeros(C,    device=embs.device)
@@ -193,7 +194,7 @@ def generate_pseudolabels(config, image, target):
     class_indices = class_indices[(class_indices != 255) & (class_indices != 0)] # remove ignore index and class 0 (background)
     class_names = [CLASS_NAMES[i] for i in class_indices]
     # 2. prompt-ensemble text embeddings -------------------------------------
-    text_emb = build_text_embeddings(model, tokenizer, class_names + BACKGROUND_CLASS_NAMES)
+    text_emb = build_text_embeddings(model, class_names + BACKGROUND_CLASS_NAMES)
     # 3. compute cosine similarity directly on patches and upsample ----------
     num_foreground_classes = len(class_names)
     pix_prob = compute_patch_cosine_similarity(

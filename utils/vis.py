@@ -65,14 +65,12 @@ def vis_train_sample_img(original_train_dataset, train_dataset, model, index, ou
     target_batch = [target]  # Wrap in list for batch processing
     
     with torch.no_grad():
-        # Forward pass through model to get segmentation and dino.txt patch tokens
         model_outputs = model(transformed_img_batch)
-        segmentations = model_outputs['seg']  # [1, C, H, W]
-        dinotxt_patch_tokens = model_outputs['dinotxt']  # [1, P, D]
-        
-        # Generate pseudolabels from dino.txt patch tokens using precomputed text embeddings
+        segmentations = model_outputs["seg"]
+        clip_patch_tokens = model_outputs["clip"]
+
         pseudolabels_batch, class_indices_batch = generate_pseudolabels_batch(
-            dinotxt_patch_tokens, target_batch, text_emb_all, num_all_fg, num_bg
+            clip_patch_tokens, target_batch, text_emb_all, num_all_fg, num_bg
         )
         
         # Convert pseudolabels to tensor format matching segmentation output

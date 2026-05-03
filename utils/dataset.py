@@ -24,7 +24,8 @@ DATASET_YEAR_DICT = {
         'base_dir': 'VOCdevkit_old/VOC2012'
     }
 }
-RESIZE_SIZE = 448
+# Match OpenAI CLIP ViT pretrained input (e.g. ViT-L/14 uses 224×224).
+RESIZE_SIZE = 224
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
 

@@ -1,12 +1,12 @@
-# Training Configuration for DINO WSSS
-# Weakly Supervised Semantic Segmentation using DINO
+# Training Configuration for CLIP WSSS
+# Weakly Supervised Semantic Segmentation using OpenAI CLIP
 
 # Model Parameters
 model:
   num_classes: 21
-  backbone_name: "dinov3_vitl16"
-  num_transformer_blocks: 0
-  num_conv_blocks: 0
+  clip_model_name: "ViT-L/14"
+  num_transformer_blocks: 1
+  num_conv_blocks: 2
   out_channels: 21
   use_bottleneck: false
   use_transpose_conv: false
@@ -38,14 +38,14 @@ dataset:
 
 # Directory Structure
 directories:
-  output: 'output_23_decoder'
+  output: 'output_29_upsampling_order'
   checkpoints: 'checkpoints'
   visualizations: 'vis_{num_epochs}epochs_t=0.05mm_w=mixed_dl=5_sam_0t0c'
 
 # File Paths
 paths:
-  model_checkpoint: 'output_23_decoder/checkpoints/10epochs_t=0.05mm_kl_0t0c.pt'
-  model: 'output_23_decoder/checkpoints/{num_epochs}epochs_t=0.05mm_w=mixed_dl=5_sam_0t0c.pt'
+  model_checkpoint: 'output_29_upsampling_order/checkpoints/10epochs_t=0.05mm_kl_0t0c.pt'
+  model: 'output_29_upsampling_order/checkpoints/{num_epochs}epochs_t=0.05mm_w=mixed_dl=5_sam_0t0c.pt'
   sam_checkpoint: 'sam_checkpoint/sam_vit_b_01ec64.pth'
 
 # Visualization Parameters

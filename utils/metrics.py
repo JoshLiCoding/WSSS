@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 
-def test_time_augmentation_inference(model, image, target_size, scales=[1.0], base_size=(448, 448), device='cuda'):
+def test_time_augmentation_inference(model, image, target_size, scales=[1.0], base_size=(224, 224), device='cuda'):
     """
     Perform test-time augmentation by running inference at multiple scales with horizontal flips and aggregating outputs.
     When base_size is set, input is interpolated once to (base_size * scale) per scale; otherwise uses image size * scale.

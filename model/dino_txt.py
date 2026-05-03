@@ -28,7 +28,7 @@ PROMPT_TEMPLATES: Tuple[str, ...] = (
     "a close-up photo of {}", "a cropped image featuring {}",
 )
 
-CANONICAL_SIZE = (448, 448)
+CANONICAL_SIZE = (224, 224)
 CROP_AREAS      = [0.01, 0.1, 0.3, 1]
 
 DEVICE        = torch.device("cuda" if torch.cuda.is_available() else "cpu")

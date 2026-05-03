@@ -14,17 +14,15 @@ from tqdm import tqdm
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from model.dino import DinoWSSS
+import clip
+
+from model.clip import ClipWSSS
 from utils.dataset import (
     val_transform_tta,
     cmap,
     DATASET_YEAR_DICT,
 )
 from utils.metrics import test_time_augmentation_inference
-
-DINOV3_LOCATION = '/u501/j234li/wsss/model/dinov3'
-sys.path.append(DINOV3_LOCATION)
-
 
 class VOCTestImageDataset(torch.utils.data.Dataset):
     """VOC test split: images only (no masks). Returns (PIL_image, (H, W), image_name)."""
@@ -90,13 +88,15 @@ def main():
     test_dataset = VOCTestImageDataset(root=root, year=year, image_set='test')
     dataset = TestTTADataset(test_dataset)
 
-    model = DinoWSSS(
-        backbone_name=config['model']['backbone_name'],
-        num_transformer_blocks=config['model']['num_transformer_blocks'],
-        num_conv_blocks=config['model']['num_conv_blocks'],
-        out_channels=config['model']['out_channels'],
-        use_bottleneck=config['model']['use_bottleneck'],
-        use_transpose_conv=config['model']['use_transpose_conv'],
+    clip_model, _ = clip.load(config["model"]["clip_model_name"], device=device, jit=False)
+    clip_model = clip_model.float()
+    model = ClipWSSS(
+        clip_model,
+        num_transformer_blocks=config["model"]["num_transformer_blocks"],
+        num_conv_blocks=config["model"]["num_conv_blocks"],
+        out_channels=config["model"]["out_channels"],
+        use_bottleneck=config["model"]["use_bottleneck"],
+        use_transpose_conv=config["model"]["use_transpose_conv"],
     ).to(device)
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     model.load_state_dict(ckpt['model_state_dict'])
