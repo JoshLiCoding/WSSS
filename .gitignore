@@ -1,0 +1,23 @@
+# Output directories
+output/
+output_*/
+outputs/
+outputs_*/
+
+# Data & checkpoints
+datasets/
+sam_checkpoint/
+FastSAM-x.pt
+
+# Experiment tracking
+wandb/
+main.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / tooling
+.claude/
+.vscode/

@@ -1,0 +1,68 @@
+# Training Configuration for CLIP WSSS
+# Weakly Supervised Semantic Segmentation using a frozen CLIP backbone,
+# softmax-GradCAM pseudolabels (CLIP-ES), and a single-stage trainable decoder.
+
+# Keep relative paths (./datasets, sam_checkpoint/...) resolving against the
+# launch directory instead of Hydra's per-run output directory, and disable
+# Hydra's own outputs/ directory + .hydra subdir entirely.
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: False
+
+# Model Parameters
+model:
+  num_classes: 21
+  clip_name: "ViT-B/16"
+  num_transformer_blocks: 3
+  num_conv_blocks: 3
+
+# Training Parameters
+training:
+  batch_size: 16
+  num_epochs: 0
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  momentum: 0.9
+  ignore_index: 255
+  validation_interval: 2
+  train_only: false
+
+# Loss Parameters
+loss:
+  contour_method: 'fastsam'  # 'sam', 'fastsam', 'slic', 'gt'
+
+# Pseudo-label Parameters
+pseudolabel:
+  bg_exponent: 1.0
+  hard_label_percentage: 0.0
+
+# Dataset Parameters
+dataset:
+  dataset_name: 'voc'
+  root: './datasets'
+  resize_size: 448
+
+# Directory Structure
+directories:
+  output: 'output_test'
+  checkpoints: 'checkpoints'
+  visualizations: 'vis_${training.num_epochs}epochs_w=500_bg=0_dl=5'
+
+# File Paths
+paths:
+  model_checkpoint: 'output_test/checkpoints/${training.num_epochs}epochs.pt'
+  model: 'output_test/checkpoints/${training.num_epochs}epochs_w=500_bg=0_dl=5.pt'
+
+# Visualization Parameters
+visualization:
+  train_sample_interval: 50
+  val_sample_interval: 50
+
+# Weights & Biases Configuration
+wandb:
+  project: "WSSS"
+  entity: "joshlicoding-university-of-waterloo"
+  log_visualizations: false
