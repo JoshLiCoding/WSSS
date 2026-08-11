@@ -1,37 +1,29 @@
+"""Stage 2: train ResNet101 DeepLabV2 on cached dino.txt pseudo-labels.
+
+Stage 1 (dino.txt pseudo-labels + mask boundaries) runs here too if its caches are missing;
+run generate.py to do it on its own beforehand.
+"""
+
 import os
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torch.utils.data import DataLoader, Subset
-from PIL import Image
-from tqdm import tqdm
-import numpy as np
-import matplotlib.pyplot as plt
+
 import hydra
-from omegaconf import DictConfig, OmegaConf
+import numpy as np
+import torch
+import torch.nn.functional as F
 import wandb
-from ultralytics import FastSAM
-from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
+from omegaconf import DictConfig, OmegaConf
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
-from model.clip_wsss import ClipWSSS
-from model.deeplab import deeplabv3_resnet101, deeplabv3plus_resnet101
+from model.deeplabv2 import DeepLabV2
+from model.dino_txt import ensure_pseudolabels
 from model.scheduler import PolyLR
-from model.clip_pseudolabels import ClipGradCAM, build_text_embeddings, apply_hard_supervision
-from utils.dataset import VOCSegmentation, COCOSegmentation, CustomSegmentationTrain, CustomSegmentationVal
-from utils.loss import CollisionCrossEntropyLoss, PottsLoss, KLDivergenceLoss, CrossEntropyLoss
+from utils.boundaries import ensure_boundaries
+from utils.dataset import CustomSegmentationTrain, CustomSegmentationVal, build_dataset
+from utils.loss import CollisionCrossEntropyLoss, KLDivergenceLoss, PottsLoss
 from utils.metrics import update_miou
-from utils.sam import (
-    generate_sam_contours_batch,
-    generate_fastsam_contours_batch,
-    generate_slic_contours_batch,
-    generate_gt_contours_batch,
-)
-from utils.vis import vis_train_sample_img, vis_val_sample_img, vis_train_loss, vis_val_loss
-
-def trainable_state_dict(model):
-    return {k: v for k, v in model.state_dict().items() if not k.startswith('clip.')}
-
+from utils.pseudolabels import soft_pseudolabels
+from utils.vis import vis_train_loss, vis_train_sample_img, vis_val_loss, vis_val_sample_img
 
 VOC_CLASS_NAMES = {0: "background", 1: "aeroplane", 2: "bicycle", 3: "bird", 4: "boat", 5: "bottle", 6: "bus", 7: "car", 8: "cat", 9: "chair", 10: "cow", 11: "diningtable", 12: "dog", 13: "horse", 14: "motorbike", 15: "person", 16: "potted plant", 17: "sheep", 18: "sofa", 19: "train", 20: "tv/monitor", 255: "ignore"}
 
@@ -65,97 +57,50 @@ def main(cfg: DictConfig) -> None:
         config=OmegaConf.to_container(cfg, resolve=True),  # Log the entire configuration
     )
 
-    # augmented VOC train set
-    if cfg.dataset.dataset_name == 'voc':
-        original_train_dataset = VOCSegmentation(
-            cfg.dataset.root,
-            image_set='train',
-        )
-    elif cfg.dataset.dataset_name == 'coco':
-        original_train_dataset = COCOSegmentation(
-            cfg.dataset.root,
-            image_set='train',
-        )
+    original_train_dataset = build_dataset(cfg, 'train')  # augmented VOC train set
+    original_val_dataset = build_dataset(cfg, 'val')
 
-    if cfg.dataset.dataset_name == 'voc':
-        original_val_dataset = VOCSegmentation(
-            cfg.dataset.root,
-            image_set='val',
-        )
-    elif cfg.dataset.dataset_name == 'coco':
-        original_val_dataset = COCOSegmentation(
-            cfg.dataset.root,
-            image_set='val',
-        )
+    # Stage 1: generate the pseudo-labels and boundaries that are not cached yet.
+    ensure_pseudolabels(cfg, original_train_dataset, cfg.pseudolabel.dir, device)
+    ensure_boundaries(cfg, original_train_dataset, cfg.boundary.dir, device)
 
+    NUM_CLASSES = cfg.model.num_classes
+    LABEL_SIZE = cfg.dataset.label_size
     train_dataset = CustomSegmentationTrain(
         original_train_dataset,
         resize_size=cfg.dataset.resize_size,
+        label_size=LABEL_SIZE,
+        num_classes=NUM_CLASSES,
+        pseudolabel_dir=cfg.pseudolabel.dir,
+        boundary_dir=cfg.boundary.dir,
     )
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg.training.batch_size,
         shuffle=True,
+        num_workers=cfg.training.num_workers,
     )
     val_dataset = CustomSegmentationVal(original_val_dataset, resize_size=cfg.dataset.resize_size)
 
-    # Initialize the mask generator for the selected contour method (if needed)
-    CONTOUR_METHOD = cfg.loss.contour_method
-    mask_generator = None
-    if CONTOUR_METHOD == 'fastsam':
-        mask_generator = FastSAM('FastSAM-x.pt')
-    elif CONTOUR_METHOD == 'sam':
-        sam_checkpoint = 'sam_checkpoint/sam_vit_b_01ec64.pth'
-        model_type = "vit_b"  # or "vit_b", "vit_l" depending on checkpoint
-        sam_model = sam_model_registry[model_type](checkpoint=sam_checkpoint).to(device)
-        mask_generator = SamAutomaticMaskGenerator(
-            model=sam_model,
-            points_per_side=16,
-            points_per_batch=256,
-            pred_iou_thresh=0.8,
-            stability_score_thresh=0.8
-        )
-        print("SAM model initialized for automatic mask generation")
-    
-    NUM_CLASSES = cfg.model.num_classes
-    model = ClipWSSS(
-        clip_name=cfg.model.clip_name,
-        num_transformer_blocks=cfg.model.num_transformer_blocks,
-        num_conv_blocks=cfg.model.num_conv_blocks,
-        out_channels=NUM_CLASSES,
-        img_size=cfg.dataset.resize_size,
-        device=device,
+    model = DeepLabV2(
+        num_classes=NUM_CLASSES,
+        pretrained_backbone=cfg.model.pretrained_backbone,
     ).to(device)
-    cam_generator = ClipGradCAM(model.clip, img_size=cfg.dataset.resize_size, bg_exponent=cfg.pseudolabel.bg_exponent)
-
-    # Precompute text embeddings for all classes (once before training)
-    print("Precomputing text embeddings for all classes...")
-    text_emb_all, num_all_fg, num_bg = build_text_embeddings(cfg, model.clip, device=device)
-    print(f"Text embeddings computed: shape {text_emb_all.shape}")
 
     LEARNING_RATE = cfg.training.learning_rate
-    optimizer_params = [
-        {'params': model.transformer_blocks.parameters(), 'lr': LEARNING_RATE},
-        {'params': model.ln.parameters(), 'lr': LEARNING_RATE},
-        {'params': model.conv_blocks.parameters(), 'lr': LEARNING_RATE},
-        {'params': model.classifier.parameters(), 'lr': LEARNING_RATE},
-    ]
-
     optimizer = torch.optim.SGD(
-        params=optimizer_params,
-        lr=LEARNING_RATE,
+        params=model.param_groups(LEARNING_RATE, cfg.training.weight_decay),
         momentum=cfg.training.momentum,
-        weight_decay=cfg.training.weight_decay
     )
     NUM_EPOCHS = cfg.training.num_epochs
-    max_iters = NUM_EPOCHS * len(train_loader)
-    # scheduler = PolyLR(optimizer, max_iters=max_iters)
+    max_iters = max(1, NUM_EPOCHS * len(train_loader))
+    scheduler = PolyLR(optimizer, max_iters=max_iters) if cfg.training.poly_lr else None
 
     model_checkpoint = cfg.paths.model_checkpoint
     if os.path.exists(model_checkpoint):
         print(f"Loading checkpoint from {model_checkpoint}...")
         checkpoint = torch.load(model_checkpoint, map_location=device, weights_only=False)
-        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        model.load_state_dict(checkpoint['model_state_dict'])
         print(f"Resuming training")
     else:
         print("No checkpoint found, starting training from epoch 0.")
@@ -171,103 +116,46 @@ def main(cfg: DictConfig) -> None:
 
     TRAIN_ONLY = cfg.training.train_only
     MODEL_PATH = cfg.paths.model
+    TEMPERATURE = cfg.pseudolabel.temperature
     for epoch in tqdm(range(NUM_EPOCHS), desc="Training epochs"):
         model.train()
-        model.clip.eval()
 
         running_total_loss = 0.0
         running_unary_loss = 0.0
         running_pairwise_loss = 0.0
-        for i, (transformed_images, targets) in enumerate(train_loader):
-            transformed_images = transformed_images.to(device)
+        for i, (images, targets, pseudolabel_sims, present, edges) in enumerate(train_loader):
+            images = images.to(device)
 
             optimizer.zero_grad()
 
-            # Forward pass through model (frozen CLIP backbone + trainable decoder)
-            model_outputs = model(transformed_images)
-            segmentations = model_outputs['seg']
-
-            # Generate pseudolabels via softmax-GradCAM on the frozen CLIP backbone
-            pseudolabels_batch, class_indices_batch = cam_generator(
-                transformed_images, targets, text_emb_all, num_all_fg, num_bg
-            )
-            
-            # Convert pseudolabels to tensor format matching segmentation output
-            B, _, H_seg, W_seg = segmentations.shape
-            pseudolabel_probs = torch.zeros((B, NUM_CLASSES, H_seg, W_seg), dtype=torch.float32, device=device)
-
-            for b in range(B):
-                pseudolabel = pseudolabels_batch[b]
-                class_indices = class_indices_batch[b]
-
-                pseudolabel_tensor = pseudolabel.unsqueeze(0)
-
-                # Interpolate to segmentation size
-                pseudolabel_tensor = F.interpolate(pseudolabel_tensor, size=(H_seg, W_seg), mode='bilinear', align_corners=False)
-                pseudolabel_tensor = pseudolabel_tensor[0]
-                
-                # Softmax with temperature
-                t = 1.0
-                pseudolabel_probs_b = torch.softmax(pseudolabel_tensor / t, dim=0)
-
-                # Min-max normalize channel-wise, then renormalize to probability simplex
-                min_vals = pseudolabel_probs_b.view(pseudolabel_probs_b.shape[0], -1).min(dim=1, keepdim=True)[0].unsqueeze(-1)
-                max_vals = pseudolabel_probs_b.view(pseudolabel_probs_b.shape[0], -1).max(dim=1, keepdim=True)[0].unsqueeze(-1)
-                pseudolabel_probs_b = (pseudolabel_probs_b - min_vals) / (max_vals - min_vals + 1e-8)
-
-                pseudolabel_probs_b = pseudolabel_probs_b / (pseudolabel_probs_b.sum(dim=0, keepdim=True) + 1e-8)
-
-                pseudolabel_probs_b, _ = apply_hard_supervision(
-                    pseudolabel_probs_b, cfg.pseudolabel.hard_label_percentage
+            segmentations = model(images)
+            if segmentations.shape[-2:] != (LABEL_SIZE, LABEL_SIZE):
+                segmentations = F.interpolate(
+                    segmentations, size=(LABEL_SIZE, LABEL_SIZE), mode='bilinear', align_corners=False
                 )
 
-                # Map to full class space
-                if len(class_indices) == 0:
-                    # Only background class
-                    pseudolabel_probs[b, 0] = pseudolabel_probs_b[0]  # background
-                else:
-                    for idx, class_idx in enumerate(class_indices):
-                        pseudolabel_probs[b, class_idx] = pseudolabel_probs_b[idx]
-                    pseudolabel_probs[b, 0] = pseudolabel_probs_b[len(class_indices)]  # background
-            
-            # Generate contours based on the selected method
-            if CONTOUR_METHOD == 'gt':
-                contours_x_batch, contours_y_batch = generate_gt_contours_batch(targets, device)
-            elif CONTOUR_METHOD in ('sam', 'fastsam', 'slic'):
-                def _to_pil(img_t):
-                    img_denorm = train_dataset.denormalize(img_t.clone())
-                    img_np = (img_denorm.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-                    return Image.fromarray(img_np)
+            # Soft pseudo-labels from the cached dino.txt similarities
+            pseudolabel_probs = soft_pseudolabels(
+                pseudolabel_sims.to(device), present.to(device), TEMPERATURE
+            )
 
-                images_pil = [_to_pil(img) for img in transformed_images]
+            # Cached mask boundaries, split into the horizontal and vertical neighbour pairs
+            edges = edges.to(device).float()
+            contours_x_batch = edges[:, 0, :, :-1]  # (B, H, W-1)
+            contours_y_batch = edges[:, 1, :-1, :]  # (B, H-1, W)
 
-                if CONTOUR_METHOD == 'sam':
-                    contours_x_batch, contours_y_batch = generate_sam_contours_batch(
-                        mask_generator, images_pil, device
-                    )
-                elif CONTOUR_METHOD == 'fastsam':
-                    contours_x_batch, contours_y_batch = generate_fastsam_contours_batch(
-                        mask_generator, images_pil, device
-                    )
-                else:
-                    contours_x_batch, contours_y_batch = generate_slic_contours_batch(
-                        images_pil, device
-                    )
-
-                contours_x_batch = contours_x_batch.to(device)
-                contours_y_batch = contours_y_batch.to(device)
-            
             # unary potential
-            unary_loss = CollisionCrossEntropyLoss(segmentations, pseudolabel_probs) # KLDivergenceLoss(segmentations, pseudolabel_probs)
+            unary_loss = CollisionCrossEntropyLoss(segmentations, pseudolabel_probs) # KLDivergenceLoss(segmentations, pseudolabel_probs) 
 
             # pairwise potential
-            pairwise_loss = PottsLoss(segmentations, contours_x_batch, contours_y_batch) # torch.tensor(0.0, device=device)
+            pairwise_loss = PottsLoss(segmentations, contours_x_batch, contours_y_batch)
 
             total_loss = unary_loss + pairwise_loss
 
             total_loss.backward()
             optimizer.step()
-            # scheduler.step()
+            if scheduler is not None:
+                scheduler.step()
 
             running_total_loss += total_loss.item()
             running_unary_loss += unary_loss.item()
@@ -285,13 +173,13 @@ def main(cfg: DictConfig) -> None:
         for running_loss_sum, epoch_loss_list in loss_data:
             avg_loss = running_loss_sum / num_batches
             epoch_loss_list.append(avg_loss)
-            
+
         print(f"Epoch {epoch+1} finished. "
             f"Average Total Loss: {epoch_total_losses[-1]:.4f}, "
             f"Avg Unary: {epoch_unary_losses[-1]:.4f}, "
             f"Avg Pairwise: {epoch_pairwise_losses[-1]:.4f}"
             )
-        
+
         # Log training losses to wandb
         wandb.log({
             "epoch": epoch + 1,
@@ -299,16 +187,14 @@ def main(cfg: DictConfig) -> None:
             "train/unary_loss": epoch_unary_losses[-1],
             "train/pairwise_loss": epoch_pairwise_losses[-1]
         })
-        
+
         # validation
         if (epoch + 1) % cfg.training.validation_interval == 0 or epoch == NUM_EPOCHS - 1:
             if TRAIN_ONLY:
                 print("TRAIN_ONLY is set to True, skipping validation. Saving model checkpoint...")
-                torch.save({
-                    'model_state_dict': trainable_state_dict(model)
-                }, MODEL_PATH)
+                torch.save({'model_state_dict': model.state_dict()}, MODEL_PATH)
                 continue
-            
+
             print(f"Running validation at epoch {epoch + 1}...")
             model.eval()
 
@@ -316,15 +202,14 @@ def main(cfg: DictConfig) -> None:
             # initialize per-class intersection and union counters
             intersection_counts = np.zeros(NUM_CLASSES)
             union_counts = np.zeros(NUM_CLASSES)
-            
+
             with torch.no_grad():
                 for val_transformed_image, val_target in val_dataset:
                     val_transformed_image = val_transformed_image.to(device)
                     val_target = val_target.to(device)
-                    
-                    val_output = model(val_transformed_image.unsqueeze(0))
-                    segmentation = val_output['seg']
-                    
+
+                    segmentation = model(val_transformed_image.unsqueeze(0))
+
                     update_miou(segmentation, val_target.unsqueeze(0), intersection_counts, union_counts, NUM_CLASSES, IGNORE_INDEX)
 
             ious = []
@@ -338,50 +223,47 @@ def main(cfg: DictConfig) -> None:
             avg_miou = np.mean(ious)
             validation_mious.append(avg_miou)
             validation_epochs.append(epoch + 1)
-            
+
             print(f"Validation mIoU: {avg_miou:.4f}")
-            
+
             # Log validation mIoU to wandb
             wandb.log({
                 "epoch": epoch + 1,
                 "val/miou": avg_miou,
                 "val/best_miou": best_miou
             })
-            
+
             # Save best model based on validation mIoU
             if avg_miou > best_miou:
                 best_miou = avg_miou
                 best_epoch = epoch + 1
-                torch.save({
-                    'model_state_dict': trainable_state_dict(model)
-                }, MODEL_PATH)
+                torch.save({'model_state_dict': model.state_dict()}, MODEL_PATH)
                 print(f"New best model saved! mIoU: {best_miou:.4f} at epoch {best_epoch}")
-                
+
 
     print(f"\nTraining complete! Best model was at epoch {best_epoch} with mIoU {best_miou:.4f}")
-    
+
     # Log final summary to wandb
     wandb.log({
         "final/best_miou": best_miou,
         "final/best_epoch": best_epoch,
         "final/total_epochs": NUM_EPOCHS
     })
-    
+
     if os.path.exists(MODEL_PATH):
         best_checkpoint = torch.load(MODEL_PATH, map_location=device, weights_only=False)
-        model.load_state_dict(best_checkpoint['model_state_dict'], strict=False)
+        model.load_state_dict(best_checkpoint['model_state_dict'])
         print(f"Best model loaded successfully! Final validation mIoU: {best_miou:.4f}")
-    
+
     vis_output_dir = os.path.join(DIRS['output'], DIRS['visualizations'])
     for i in range(0, len(original_train_dataset), cfg.visualization.train_sample_interval):
         vis_train_sample_img(
             original_train_dataset, train_dataset, model, i, vis_output_dir,
-            cam_generator=cam_generator, text_emb_all=text_emb_all, num_all_fg=num_all_fg, num_bg=num_bg,
-            mask_generator=mask_generator, num_classes=NUM_CLASSES,
-            contour_method=CONTOUR_METHOD, hard_label_percentage=cfg.pseudolabel.hard_label_percentage
+            num_classes=NUM_CLASSES, temperature=TEMPERATURE,
+            contour_method=cfg.loss.contour_method,
         )
     vis_train_loss(NUM_EPOCHS, epoch_total_losses, epoch_unary_losses, epoch_pairwise_losses, vis_output_dir)
-    
+
     if not TRAIN_ONLY:
         for i in range(0, len(original_val_dataset), cfg.visualization.val_sample_interval):
             vis_val_sample_img(original_val_dataset, val_dataset, model, i, vis_output_dir)
@@ -392,7 +274,7 @@ def main(cfg: DictConfig) -> None:
         for file in os.listdir(vis_output_dir):
             if file.endswith('.png'):
                 wandb.log({"plots/visualizations": wandb.Image(os.path.join(vis_output_dir, file))})
-        
+
     wandb.finish()
 
 if __name__ == "__main__":

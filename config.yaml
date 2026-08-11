@@ -1,10 +1,12 @@
-# Training Configuration for CLIP WSSS
-# Weakly Supervised Semantic Segmentation using a frozen CLIP backbone,
-# softmax-GradCAM pseudolabels (CLIP-ES), and a single-stage trainable decoder.
+# Training Configuration for WSSS with dino.txt pseudo-labels
+# Stage 1 (`python generate.py`, or the first `python main.py`): cache dino.txt patch-level
+# pseudo-labels and mask boundaries under pseudolabel.dir / boundary.dir.
+# Stage 2 (`python main.py`): train ResNet101 DeepLabV2 on those caches with the collision
+# cross-entropy unary loss and the Potts pairwise loss.
 
-# Keep relative paths (./datasets, sam_checkpoint/...) resolving against the
-# launch directory instead of Hydra's per-run output directory, and disable
-# Hydra's own outputs/ directory + .hydra subdir entirely.
+# Keep relative paths (./datasets, pseudolabels/...) resolving against the launch directory
+# instead of Hydra's per-run output directory, and disable Hydra's own outputs/ directory +
+# .hydra subdir entirely.
 hydra:
   run:
     dir: .
@@ -15,20 +17,20 @@ hydra:
 # Model Parameters
 model:
   num_classes: 21
-  clip_name: "ViT-B/16"
-  num_transformer_blocks: 3
-  num_conv_blocks: 3
+  pretrained_backbone: true  # ImageNet ResNet101 weights
 
 # Training Parameters
 training:
   batch_size: 16
-  num_epochs: 0
-  learning_rate: 0.001
+  num_epochs: 10
+  learning_rate: 0.001  # 10x on the ASPP head weights, 20x on its biases
   weight_decay: 0.0001
   momentum: 0.9
   ignore_index: 255
   validation_interval: 2
   train_only: false
+  poly_lr: true
+  num_workers: 4
 
 # Loss Parameters
 loss:
@@ -36,25 +38,36 @@ loss:
 
 # Pseudo-label Parameters
 pseudolabel:
-  bg_exponent: 1.0
-  hard_label_percentage: 0.0
+  dir: 'pseudolabels/${dataset.dataset_name}'
+  dinov3_location: '/u501/j234li/reg_loss/model/dinov3'
+  image_size: 448    # dino.txt input size; the patch grid is image_size / 16
+  temperature: 0.05  # softmax temperature applied to the patch cosine similarities
+  batch_size: 8
+
+# Boundary Parameters
+boundary:
+  dir: 'boundaries/${dataset.dataset_name}_${loss.contour_method}'
 
 # Dataset Parameters
 dataset:
   dataset_name: 'voc'
   root: './datasets'
   resize_size: 448
+  # Resolution the losses are computed at. 56 = resize_size / 8 is DeepLabV2's native output
+  # stride; a larger value (e.g. 112) bilinearly upsamples the logits first, which makes the
+  # fixed 5-pixel dilation in the Potts affinity cover less of the image.
+  label_size: 56
 
 # Directory Structure
 directories:
   output: 'output_test'
   checkpoints: 'checkpoints'
-  visualizations: 'vis_${training.num_epochs}epochs_w=500_bg=0_dl=5'
+  visualizations: 'vis_${training.num_epochs}epochs_w=mixed_bg=0_cce'
 
 # File Paths
 paths:
-  model_checkpoint: 'output_test/checkpoints/${training.num_epochs}epochs.pt'
-  model: 'output_test/checkpoints/${training.num_epochs}epochs_w=500_bg=0_dl=5.pt'
+  model_checkpoint: 'output_test/checkpoints/4epochs_w=0_bg=0_kl.pt'
+  model: 'output_test/checkpoints/${training.num_epochs}epochs_w=mixed_bg=0_cce.pt'
 
 # Visualization Parameters
 visualization:

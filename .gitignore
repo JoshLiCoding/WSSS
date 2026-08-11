@@ -9,6 +9,10 @@ datasets/
 sam_checkpoint/
 FastSAM-x.pt
 
+# Cached stage-1 pseudo-labels and mask boundaries
+pseudolabels/
+boundaries/
+
 # Experiment tracking
 wandb/
 main.log

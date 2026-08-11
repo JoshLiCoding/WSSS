@@ -1,0 +1,51 @@
+Running on host: watgpu1008
+model:
+  num_classes: 21
+  pretrained_backbone: true
+training:
+  batch_size: 16
+  num_epochs: 10
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  momentum: 0.9
+  ignore_index: 255
+  validation_interval: 2
+  train_only: false
+  poly_lr: true
+  num_workers: 4
+loss:
+  contour_method: fastsam
+pseudolabel:
+  dir: pseudolabels/${dataset.dataset_name}
+  dinov3_location: /u501/j234li/reg_loss/model/dinov3
+  image_size: 448
+  temperature: 0.05
+  batch_size: 8
+boundary:
+  dir: boundaries/${dataset.dataset_name}_${loss.contour_method}
+dataset:
+  dataset_name: voc
+  root: ./datasets
+  resize_size: 448
+  label_size: 56
+directories:
+  output: output_test
+  checkpoints: checkpoints
+  visualizations: vis_${training.num_epochs}epochs_w=mixed_bg=0_cce
+paths:
+  model_checkpoint: output_test/checkpoints/4epochs_w=0_bg=0_kl.pt
+  model: output_test/checkpoints/${training.num_epochs}epochs_w=mixed_bg=0_cce.pt
+visualization:
+  train_sample_interval: 50
+  val_sample_interval: 50
+wandb:
+  project: WSSS
+  entity: joshlicoding-university-of-waterloo
+  log_visualizations: false
+
+Using cached dino.txt pseudo-labels for 10582 images in pseudolabels/voc
+Using cached fastsam boundaries for 10582 images in boundaries/voc_fastsam
+Loading checkpoint from output_test/checkpoints/4epochs_w=0_bg=0_kl.pt...
+Resuming training
+
+Starting training...

@@ -1,0 +1,10 @@
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /u501/j234li/.netrc.
+wandb: Currently logged in as: joshlicoding (joshlicoding-university-of-waterloo) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run xshjybyd
+wandb: Tracking run with wandb version 0.28.1
+wandb: Run data is saved locally in /u501/j234li/reg_loss/wandb/run-20260811_020720-xshjybyd
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run vis_10epochs_w=mixed_bg=0_cce
+wandb: ⭐️ View project at https://wandb.ai/joshlicoding-university-of-waterloo/WSSS
+wandb: 🚀 View run at https://wandb.ai/joshlicoding-university-of-waterloo/WSSS/runs/xshjybyd
+Training epochs:   0%|          | 0/10 [00:00<?, ?it/s]
