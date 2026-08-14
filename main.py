@@ -1,6 +1,6 @@
-"""Stage 2: train ResNet101 DeepLabV2 on cached dino.txt pseudo-labels.
+"""Stage 2: train ResNet101 DeepLabV2 on cached DINOv2 pseudo-labels.
 
-Stage 1 (dino.txt pseudo-labels + mask boundaries) runs here too if its caches are missing;
+Stage 1 (DINOv2 pseudo-labels + mask boundaries) runs here too if its caches are missing;
 run generate.py to do it on its own beforehand.
 """
 
@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from model.deeplabv2 import DeepLabV2
-from model.dino_txt import ensure_pseudolabels
+from model.dinov2_cam import ensure_pseudolabels
 from model.scheduler import PolyLR
 from utils.boundaries import ensure_boundaries
 from utils.dataset import CustomSegmentationTrain, CustomSegmentationVal, build_dataset
@@ -134,7 +134,7 @@ def main(cfg: DictConfig) -> None:
                     segmentations, size=(LABEL_SIZE, LABEL_SIZE), mode='bilinear', align_corners=False
                 )
 
-            # Soft pseudo-labels from the cached dino.txt similarities
+            # Soft pseudo-labels from the cached DINOv2 similarities
             pseudolabel_probs = soft_pseudolabels(
                 pseudolabel_sims.to(device), present.to(device), TEMPERATURE
             )

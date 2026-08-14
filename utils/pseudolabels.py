@@ -1,4 +1,4 @@
-"""Turning cached dino.txt similarities into soft pseudo-labels, and colouring them."""
+"""Turning cached DINOv2 similarities into soft pseudo-labels, and colouring them."""
 
 import numpy as np
 import torch
@@ -25,10 +25,10 @@ def soft_pseudolabels(sim, present, temperature):
     probs = logits.softmax(dim=1)
 
     # Min-max per channel over space. Absent channels are all-zero, so they stay zero.
-    low = probs.amin(dim=(2, 3), keepdim=True)
-    high = probs.amax(dim=(2, 3), keepdim=True)
-    probs = (probs - low) / (high - low + 1e-8)
-    probs = probs / (probs.sum(dim=1, keepdim=True) + 1e-8)
+    # low = probs.amin(dim=(2, 3), keepdim=True)
+    # high = probs.amax(dim=(2, 3), keepdim=True)
+    # probs = (probs - low) / (high - low + 1e-8)
+    # probs = probs / (probs.sum(dim=1, keepdim=True) + 1e-8)
 
     # Min-max has nothing to scale when only background is present; fall back to a hard label.
     single = present.sum(dim=1) == 1

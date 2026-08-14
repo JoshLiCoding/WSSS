@@ -1,4 +1,4 @@
-"""Stage 1: cache the dino.txt pseudo-labels and the mask boundaries for the train split.
+"""Stage 1: cache the DINOv2 pseudo-labels and the mask boundaries for the train split.
 
 Both caches are keyed by image name, so this is resumable and skips whatever already exists.
 main.py calls the same two functions, so running this first is optional -- it just keeps the
@@ -9,7 +9,7 @@ import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from model.dino_txt import ensure_pseudolabels
+from model.dinov2_cam import ensure_pseudolabels
 from utils.boundaries import ensure_boundaries
 from utils.dataset import build_dataset
 

@@ -156,7 +156,7 @@ def build_dataset(cfg, image_set):
 
 
 class CustomSegmentationTrain(Dataset):
-    """Augmented training samples paired with their cached dino.txt pseudo-labels and mask
+    """Augmented training samples paired with their cached DINOv2 pseudo-labels and mask
     boundaries. The pseudo-label similarities and the boundary map go through the same
     geometric augmentation as the image, so the losses see the augmented view, and come out
     at label_size (the resolution the segmentation logits are produced at)."""

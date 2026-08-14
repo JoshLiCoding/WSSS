@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --partition=VISION
-# #SBATCH --nodelist=watgpu1008
+#SBATCH --nodelist=watgpu1008
 
 # Set output file destinations (optional)
 # By default, output will appear in a file in the submission directory:
