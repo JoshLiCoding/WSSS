@@ -1,0 +1,22 @@
+.claude/
+.vscode/
+datasets/
+old_outputs/
+outputs/
+wandb/
+FastSAM-x.pt
+sam_checkpoint/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local

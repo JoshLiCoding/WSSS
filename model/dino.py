@@ -9,7 +9,7 @@ import os
 from functools import partial
 import sys
 
-DINOV3_LOCATION = '/u501/j234li/wsss/model/dinov3'
+DINOV3_LOCATION = '/u501/j234li/reg_loss/model/dinov3'
 sys.path.append(DINOV3_LOCATION)
 
 from dinov3.layers import SelfAttentionBlock, SwiGLUFFN

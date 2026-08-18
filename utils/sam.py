@@ -1,200 +1,156 @@
-import os
 import numpy as np
-from tqdm import tqdm
-from PIL import Image
 import torch
 import torch.nn.functional as F
+from PIL import Image
 from skimage.segmentation import slic as _skimage_slic
 
-def generate_gt_contours_batch(targets, device):
+
+def generate_contours_batch(method, images, targets, denormalize, size, device,
+                            sam_mask_generator=None, fastsam_model=None):
+    """
+    Contours for a batch, from whichever source `method` names. Everything is produced at
+    `size`, the resolution the segmentation logits come out at.
+
+    Args:
+        method: 'sam', 'fastsam', 'slic', 'gt' or 'color_diff'
+        images: (B, C, H, W) normalized image batch
+        targets: (B, H, W) ground truth masks, only used by 'gt'
+        denormalize: undoes the image normalization in place
+        size: (H, W) resolution to produce contours at
+        device: torch device
+
+    Returns:
+        contours_x: (B, H, W-1) and contours_y: (B, H-1, W) float tensors
+    """
+    if method == 'gt':
+        return generate_gt_contours_batch(targets, size, device)
+
+    denormed = torch.stack([denormalize(img.clone()) for img in images])
+
+    if method == 'color_diff':
+        resized = F.interpolate(denormed.to(device), size=size, mode='bilinear', align_corners=False)
+        return generate_color_diff_contours_batch(resized, device)
+
+    images_pil = [Image.fromarray((img.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
+                  for img in denormed]
+    if method == 'sam':
+        contours = generate_sam_contours_batch(sam_mask_generator, images_pil, size)
+    elif method == 'fastsam':
+        contours = generate_fastsam_contours_batch(fastsam_model, images_pil, size, device)
+    elif method == 'slic':
+        contours = generate_slic_contours_batch(images_pil, size)
+    else:
+        raise ValueError(f"Unknown contour_method: {method}")
+    return contours[0].to(device), contours[1].to(device)
+
+
+def _contours_from_masks(masks, shape):
+    """OR together the boundaries of every binary mask. Returns (H, W-1) and (H-1, W) floats."""
+    H, W = shape
+    contours_x = np.zeros((H, W - 1), dtype=bool)
+    contours_y = np.zeros((H - 1, W), dtype=bool)
+    for mask in masks:
+        mask = mask.astype(bool)
+        assert mask.shape == (H, W), f"mask shape {mask.shape} != image shape {(H, W)}"
+        contours_x |= np.logical_xor(mask[:, :-1], mask[:, 1:])
+        contours_y |= np.logical_xor(mask[:-1, :], mask[1:, :])
+    return torch.from_numpy(contours_x).float(), torch.from_numpy(contours_y).float()
+
+
+def generate_gt_contours_batch(targets, size, device):
     """
     Generate contours from ground truth segmentation masks.
     Edges are detected when classes switch between neighboring pixels.
-    
+
     Args:
         targets: torch.Tensor of shape [B, H, W] with class indices (int64)
+        size: (H, W) resolution to produce contours at
         device: torch device
-    
+
     Returns:
         contours_x_batch: torch.Tensor of shape [B, H, W-1] with float dtype
         contours_y_batch: torch.Tensor of shape [B, H-1, W] with float dtype
     """
-    B, H, W = targets.shape
-    
-    # Resize targets using nearest-neighbor interpolation to preserve class indices
-    targets_downsampled = targets.unsqueeze(1).float()  # [B, 1, H, W]
-    H_downsampled = H // 4
-    W_downsampled = W // 4
-    targets_downsampled = F.interpolate(
-        targets_downsampled,
-        size=(H_downsampled, W_downsampled),
-        mode='nearest'
-    ).squeeze(1).long()  # [B, H_downsampled, W_downsampled]
-    
-    # Convert to numpy for efficient comparison
-    targets_np = targets_downsampled.cpu().numpy()
-    
-    contours_x_list = []
-    contours_y_list = []
-    
-    for b in range(B):
-        target = targets_np[b]  # [H_downsampled, W_downsampled]
-        
-        # Detect horizontal edges (contours_x): compare each pixel with its right neighbor
-        contours_x = (target[:, :-1] != target[:, 1:]).astype(np.float32)  # [H, W-1]
-        
-        # Detect vertical edges (contours_y): compare each pixel with its bottom neighbor
-        contours_y = (target[:-1, :] != target[1:, :]).astype(np.float32)  # [H-1, W]
-        
-        contours_x_tensor = torch.from_numpy(contours_x).to(device)  # [H, W-1]
-        contours_y_tensor = torch.from_numpy(contours_y).to(device)  # [H-1, W]
-        contours_x_list.append(contours_x_tensor)
-        contours_y_list.append(contours_y_tensor)
-    
-    # Stack into batch tensors
-    contours_x_batch = torch.stack(contours_x_list)  # [B, H, W-1]
-    contours_y_batch = torch.stack(contours_y_list)  # [B, H-1, W]
-    
-    return contours_x_batch, contours_y_batch
+    # Nearest-neighbour resize preserves the class indices
+    targets = F.interpolate(targets.unsqueeze(1).float(), size=size, mode='nearest').squeeze(1)
 
-def generate_fastsam_contours_batch(fastsam_model, images, device):
+    contours_x = (targets[:, :, :-1] != targets[:, :, 1:]).float()  # [B, H, W-1]
+    contours_y = (targets[:, :-1, :] != targets[:, 1:, :]).float()  # [B, H-1, W]
+    return contours_x.to(device), contours_y.to(device)
+
+
+def generate_fastsam_contours_batch(fastsam_model, images, size, device):
     """
     Generate FastSAM contours for a batch of images.
-    
+
     Args:
         fastsam_model: FastSAM model instance
         images: List of PIL Images
+        size: (H, W) resolution to produce contours at
         device: torch device
-    
+
     Returns:
         contours_x_batch: torch.Tensor of shape [B, H, W-1] with float dtype
         contours_y_batch: torch.Tensor of shape [B, H-1, W] with float dtype
     """
-    contours_x_list = []
-    contours_y_list = []
-    
+    contours_x_list, contours_y_list = [], []
+
     for image in images:
-        # Resize to 4x downsampled
-        image = image.resize((image.size[1] // 4, image.size[0] // 4), Image.Resampling.BILINEAR)
-        
-        # Save image temporarily for FastSAM (it expects a file path or numpy array)
-        image_np = np.array(image)
-        
-        # Generate masks using FastSAM everything mode
-        everything_results = fastsam_model(
-            image_np, 
-            device=device, 
-            retina_masks=True, 
+        image_np = np.array(image.resize(size[::-1], Image.Resampling.BILINEAR))
+
+        # FastSAM "everything" mode
+        results = fastsam_model(
+            image_np,
+            device=device,
+            retina_masks=True,
             imgsz=1024,
             conf=0.1,
             iou=0.7,
-            verbose=False  # Disable logging
+            verbose=False,
         )
-        
-        H, W = image_np.shape[:2]
-        contours_x = np.zeros((H, W - 1), dtype=bool)
-        contours_y = np.zeros((H - 1, W), dtype=bool)
-        
-        # Extract segmentation masks from FastSAM results
-        # FastSAM results are YOLO-style, masks are in results[0].masks.data
-        if everything_results[0].masks is not None:
-            masks = everything_results[0].masks.data.cpu().numpy()  # [num_masks, H, W]
-            for mask in masks:
-                # Convert to boolean and ensure correct shape
-                mask_bool = mask.astype(bool)
-                if mask_bool.shape[0] == H and mask_bool.shape[1] == W:
-                    contours_x |= np.logical_xor(mask_bool[:, :-1], mask_bool[:, 1:])  # shape: (H, W-1)
-                    contours_y |= np.logical_xor(mask_bool[:-1, :], mask_bool[1:, :])  # shape: (H-1, W)
-        
-        # Convert to tensors
-        contours_x_tensor = torch.from_numpy(contours_x).float()  # [H, W-1]
-        contours_y_tensor = torch.from_numpy(contours_y).float()  # [H-1, W]
-        contours_x_list.append(contours_x_tensor)
-        contours_y_list.append(contours_y_tensor)
-    
-    # Stack into batch tensors
-    contours_x_batch = torch.stack(contours_x_list)  # [B, H, W-1]
-    contours_y_batch = torch.stack(contours_y_list)  # [B, H-1, W]
-    
-    return contours_x_batch, contours_y_batch
+        masks = results[0].masks.data.cpu().numpy() if results[0].masks is not None else []
 
-def generate_sam_contours_batch(sam_mask_generator, images, device):
-    """xf
-    Generate SAM (Segment Anything Model) contours for a batch of images using the automatic mask generator.
-    
+        contours_x, contours_y = _contours_from_masks(masks, image_np.shape[:2])
+        contours_x_list.append(contours_x)
+        contours_y_list.append(contours_y)
+
+    return torch.stack(contours_x_list), torch.stack(contours_y_list)
+
+
+def generate_sam_contours_batch(sam_mask_generator, images, size):
+    """
+    Generate SAM (Segment Anything Model) contours for a batch of images using the automatic
+    mask generator.
+
     Args:
         sam_mask_generator: SamAutomaticMaskGenerator instance
         images: List of PIL Images
-        device: torch device
-    
+        size: (H, W) resolution to produce contours at
+
     Returns:
         contours_x_batch: torch.Tensor of shape [B, H, W-1] with float dtype
         contours_y_batch: torch.Tensor of shape [B, H-1, W] with float dtype
     """
-    contours_x_list = []
-    contours_y_list = []
-    
+    contours_x_list, contours_y_list = [], []
+
     for image in images:
-        H_orig, W_orig = image.size[1], image.size[0]
-        H_downsampled = H_orig // 4
-        W_downsampled = W_orig // 4
-        image_resized = image.resize((W_downsampled, H_downsampled), Image.Resampling.BILINEAR)
-        
-        # Convert to numpy array for SAM
-        image_np = np.array(image_resized)  # [H, W, 3] in RGB
-        
-        H, W = image_np.shape[:2]
-        contours_x = np.zeros((H, W - 1), dtype=bool)
-        contours_y = np.zeros((H - 1, W), dtype=bool)
-        
-        # Generate masks using SAM automatic mask generator
-        masks = sam_mask_generator.generate(image_np)
-        
-        # Extract contours from all masks
-        for mask in masks:
-            segmentation = mask['segmentation']  # Boolean array [H, W]
-            contours_x |= np.logical_xor(segmentation[:, :-1], segmentation[:, 1:])  # shape: (H, W-1)
-            contours_y |= np.logical_xor(segmentation[:-1, :], segmentation[1:, :])  # shape: (H-1, W)
-        
-        # Convert to tensors
-        contours_x_tensor = torch.from_numpy(contours_x).float()  # [H, W-1]
-        contours_y_tensor = torch.from_numpy(contours_y).float()  # [H-1, W]
-        contours_x_list.append(contours_x_tensor)
-        contours_y_list.append(contours_y_tensor)
+        image_np = np.array(image.resize(size[::-1], Image.Resampling.BILINEAR))  # [H, W, 3] RGB
+        masks = [m['segmentation'] for m in sam_mask_generator.generate(image_np)]
 
-        # H_orig, W_orig = image.size[1], image.size[0]
-        # H, W = H_orig // 4, W_orig // 4
-        # image_np = np.array(image)
-        # masks = sam_mask_generator.generate(image_np)
-        # contours_x = np.zeros((H, W - 1), dtype=bool)
-        # contours_y = np.zeros((H - 1, W), dtype=bool)
-        # for mask in masks:
-        #     seg = mask['segmentation']
-        #     seg = np.array(Image.fromarray(seg.astype(np.uint8)).resize((W, H), Image.NEAREST), dtype=bool)
-        #     contours_x |= np.logical_xor(seg[:, :-1], seg[:, 1:])
-        #     contours_y |= np.logical_xor(seg[:-1, :], seg[1:, :])
-        # contours_x_list.append(torch.from_numpy(contours_x).float())
-        # contours_y_list.append(torch.from_numpy(contours_y).float())
-    
-    # Stack into batch tensors
-    contours_x_batch = torch.stack(contours_x_list)  # [B, H, W-1]
-    contours_y_batch = torch.stack(contours_y_list)  # [B, H-1, W]
-    
-    return contours_x_batch, contours_y_batch
+        contours_x, contours_y = _contours_from_masks(masks, image_np.shape[:2])
+        contours_x_list.append(contours_x)
+        contours_y_list.append(contours_y)
 
-def generate_slic_contours_batch(
-    images,
-    device,
-    n_segments=100,
-    compactness=10.0,
-    sigma=0.0,
-):
+    return torch.stack(contours_x_list), torch.stack(contours_y_list)
+
+
+def generate_slic_contours_batch(images, size, n_segments=100, compactness=10.0, sigma=0.0):
     """
     Generate SLIC-superpixel contours for a batch of images.
 
     Args:
         images: List of PIL Images (RGB)
-        device: torch device (kept for API parity with other generators)
+        size: (H, W) resolution to produce contours at
         n_segments: approximate number of superpixels
         compactness: SLIC compactness parameter
         sigma: Gaussian smoothing applied prior to segmentation (in pixels)
@@ -203,17 +159,10 @@ def generate_slic_contours_batch(
         contours_x_batch: torch.Tensor of shape [B, H, W-1] with float dtype
         contours_y_batch: torch.Tensor of shape [B, H-1, W] with float dtype
     """
-
-    contours_x_list = []
-    contours_y_list = []
+    contours_x_list, contours_y_list = [], []
 
     for image in images:
-        H_orig, W_orig = image.size[1], image.size[0]
-        H_downsampled = H_orig // 4
-        W_downsampled = W_orig // 4
-        image_resized = image.resize((W_downsampled, H_downsampled), Image.Resampling.BILINEAR)
-
-        image_np = np.array(image_resized).astype(np.float32) / 255.0  # [H, W, 3]
+        image_np = np.array(image.resize(size[::-1], Image.Resampling.BILINEAR)).astype(np.float32) / 255.0
         labels = _skimage_slic(
             image_np,
             n_segments=int(n_segments),
@@ -223,44 +172,29 @@ def generate_slic_contours_batch(
             channel_axis=-1,
         )  # [H, W] int
 
-        contours_x = (labels[:, :-1] != labels[:, 1:]).astype(np.float32)  # [H, W-1]
-        contours_y = (labels[:-1, :] != labels[1:, :]).astype(np.float32)  # [H-1, W]
+        contours_x_list.append(torch.from_numpy((labels[:, :-1] != labels[:, 1:]).astype(np.float32)))
+        contours_y_list.append(torch.from_numpy((labels[:-1, :] != labels[1:, :]).astype(np.float32)))
 
-        contours_x_list.append(torch.from_numpy(contours_x))
-        contours_y_list.append(torch.from_numpy(contours_y))
+    return torch.stack(contours_x_list), torch.stack(contours_y_list)
 
-    contours_x_batch = torch.stack(contours_x_list)  # [B, H, W-1]
-    contours_y_batch = torch.stack(contours_y_list)  # [B, H-1, W]
-
-    return contours_x_batch, contours_y_batch
 
 def generate_color_diff_contours_batch(images, device, sigma=0.2):
     """
-    Generate color-difference based weights (contours) for a batch of images.
-    These weights are computed directly from color differences and used without negation.
-    
+    Generate color-difference based affinities for a batch of images. Unlike the other
+    methods these are already weights, so they are used without negation.
+
     Args:
         images: torch.Tensor of shape [B, C, H, W] with images normalized to [0, 1]
         device: torch device
-        sigma: Standard deviation parameter for the Gaussian weighting (default: 0.2)
-        lambda_param: Scaling parameter lambda (default: 1.0)
-    
+        sigma: Standard deviation parameter for the Gaussian weighting
+
     Returns:
-        contours_x_batch: torch.Tensor of shape [B, H, W-1] with float dtype (weights, not negated)
-        contours_y_batch: torch.Tensor of shape [B, H-1, W] with float dtype (weights, not negated)
+        contours_x_batch: torch.Tensor of shape [B, H, W-1] with float dtype
+        contours_y_batch: torch.Tensor of shape [B, H-1, W] with float dtype
     """
-    B, C, H, W = images.shape
-    
-    # Compute color difference for horizontal pairs
-    I_p_x = images[:, :, :, :-1]  # (B, C, H, W-1)
-    I_q_x = images[:, :, :, 1:]   # (B, C, H, W-1)
-    color_diff_sq_x = torch.sum((I_p_x - I_q_x) ** 2, dim=1)  # (B, H, W-1)
-    contours_x_batch = torch.exp(-color_diff_sq_x / (2 * sigma ** 2))  # (B, H, W-1)
-    
-    # Compute color difference for vertical pairs
-    I_p_y = images[:, :, :-1, :]  # (B, C, H-1, W)
-    I_q_y = images[:, :, 1:, :]   # (B, C, H-1, W)
-    color_diff_sq_y = torch.sum((I_p_y - I_q_y) ** 2, dim=1)  # (B, H-1, W)
-    contours_y_batch = torch.exp(-color_diff_sq_y / (2 * sigma ** 2))  # (B, H-1, W)
-    
+    diff_x = torch.sum((images[:, :, :, :-1] - images[:, :, :, 1:]) ** 2, dim=1)  # (B, H, W-1)
+    diff_y = torch.sum((images[:, :, :-1, :] - images[:, :, 1:, :]) ** 2, dim=1)  # (B, H-1, W)
+
+    contours_x_batch = torch.exp(-diff_x / (2 * sigma ** 2))
+    contours_y_batch = torch.exp(-diff_y / (2 * sigma ** 2))
     return contours_x_batch.to(device), contours_y_batch.to(device)

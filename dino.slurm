@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --partition=VISION
-#SBATCH --nodelist=watgpu1008
+# #SBATCH --nodelist=watgpu1008
 
 # Set output file destinations (optional)
 # By default, output will appear in a file in the submission directory:
@@ -25,13 +25,7 @@
 # Load up your conda environment
 # Set up environment on watgpu.cs or in interactive session (use `source` keyword instead of `conda`)
 echo "Running on host: $(hostname)"
-source activate dino
+source activate reg_loss
  
 # Task to run
-# python test_boundary_misalignment_two.py
-# python visualize_sam_edge_misalignment.py horse --n-samples 10
-# python vis_pseudolabels.py
-python dino_wsss.py
-# python utils/evaluate_tta.py /u501/j234li/wsss/output_18_voc/checkpoints/10epochs_t=0.05mm_from_kl_w=mixed_dl=5_sam.pt --crf
-# python utils/visualize_tta.py /u501/j234li/wsss/output_18_voc/checkpoints/10epochs_t=0.05mm_from_kl_w=mixed_dl=5_sam.pt --crf
-# python utils/predict_tta_voc_test.py /u501/j234li/wsss/output_18_voc/checkpoints/10epochs_t=0.05mm_from_kl_w=mixed_dl=5_sam.pt
+python main.py

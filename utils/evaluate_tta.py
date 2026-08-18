@@ -7,7 +7,7 @@ import os
 import sys
 import torch
 import numpy as np
-import yaml
+from omegaconf import OmegaConf
 from tqdm import tqdm
 
 try:
@@ -21,10 +21,10 @@ except ImportError:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model.dino import DinoWSSS
-from utils.dataset import VOCSegmentation, COCOSegmentation, CustomSegmentationValTTA, MEAN, STD
+from utils.dataset import CustomSegmentationValTTA, build_dataset, MEAN, STD
 from utils.metrics import update_miou, test_time_augmentation_inference
 
-DINOV3_LOCATION = '/u501/j234li/wsss/model/dinov3'
+DINOV3_LOCATION = '/u501/j234li/reg_loss/model/dinov3'
 sys.path.append(DINOV3_LOCATION) 
 
 VOC_CLASS_NAMES = {
@@ -77,8 +77,7 @@ def dense_crf(probs, image, sxy=80, srgb=13, compat=10, n_iters=10):
 
 def load_config(config_path='config.yaml'):
     """Load configuration from YAML file"""
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
+    return OmegaConf.load(config_path)
 
 
 def main():
@@ -129,23 +128,7 @@ def main():
     dataset_name = config['dataset']['dataset_name']
     class_names = VOC_CLASS_NAMES if dataset_name == 'voc' else COCO_CLASS_NAMES
 
-    # Build validation dataset
-    if dataset_name == 'voc':
-        original_val_dataset = VOCSegmentation(
-            config['dataset']['root'],
-            image_set=config['dataset']['val_image_set'],
-            download=config['dataset']['download']
-        )
-    elif dataset_name == 'coco':
-        original_val_dataset = COCOSegmentation(
-            os.path.join(config['dataset']['root'], 'coco'),
-            image_set=config['dataset']['val_image_set'],
-            download=config['dataset']['download']
-        )
-    else:
-        raise ValueError(
-            f"Unsupported dataset: {dataset_name}"
-        )
+    original_val_dataset = build_dataset(config, 'val')
 
     val_dataset = CustomSegmentationValTTA(original_val_dataset)
 

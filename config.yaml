@@ -1,12 +1,19 @@
 # Training Configuration for DINO WSSS
 # Weakly Supervised Semantic Segmentation using DINO
 
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: False
+
 # Model Parameters
 model:
   num_classes: 21
   backbone_name: "dinov3_vitl16"
-  num_transformer_blocks: 0
-  num_conv_blocks: 0
+  num_transformer_blocks: 1
+  num_conv_blocks: 2
   out_channels: 21
   use_bottleneck: false
   use_transpose_conv: false
@@ -21,31 +28,38 @@ training:
   ignore_index: 255
   validation_interval: 2
   train_only: false
+  num_workers: 4
+
+# Pseudo-label Parameters
+pseudolabel:
+  temperature: 0.05  # softmax temperature on the dino.txt patch similarities
+  min_max: true      # per-channel min-max scaling over space before renormalizing onto the simplex
 
 # Loss Parameters
 loss:
-  potts_type: 'quadratic'
-  contour_method: 'sam'  # 'sam', 'fastsam', 'gt', 'color_diff'
+  unary_method: 'cce'     # 'cce' (collision cross-entropy), 'kldiv'
+  contour_method: 'fastsam'    # 'sam', 'fastsam', 'slic', 'gt', 'color_diff'
+  potts_weight: 1000.0       # uniform Potts weight
+  dilation_size: 5        # max-filter size widening the contours before they become affinities
+  per_class_weights: false # when on, the uniform weight is replaced by the table below
+  class_weights_file: 'class_weights/${dataset.dataset_name}.yaml'
 
 # Dataset Parameters
 dataset:
   dataset_name: 'voc'
-  n_images: -1
-  root: '.'
-  train_image_set: 'train'
-  val_image_set: 'val'
-  download: false
+  root: './datasets'
+  resize_size: 448
 
 # Directory Structure
 directories:
-  output: 'output_23_decoder'
+  output: 'outputs'
   checkpoints: 'checkpoints'
-  visualizations: 'vis_{num_epochs}epochs_t=0.05mm_w=mixed_dl=5_sam_0t0c'
+  visualizations: 'vis_${training.num_epochs}epochs_w=1000_fastsam'
 
 # File Paths
 paths:
-  model_checkpoint: 'output_23_decoder/checkpoints/10epochs_t=0.05mm_kl_0t0c.pt'
-  model: 'output_23_decoder/checkpoints/{num_epochs}epochs_t=0.05mm_w=mixed_dl=5_sam_0t0c.pt'
+  model_checkpoint: 'outputs/checkpoints/10epochs_kl.pt'
+  model: '${directories.output}/${directories.checkpoints}/${training.num_epochs}epochs_w=1000_fastsam.pt'
   sam_checkpoint: 'sam_checkpoint/sam_vit_b_01ec64.pth'
 
 # Visualization Parameters

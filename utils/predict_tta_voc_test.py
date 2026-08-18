@@ -8,31 +8,26 @@ import os
 import sys
 import torch
 import numpy as np
-import yaml
+from omegaconf import OmegaConf
 from PIL import Image
+from torchvision import transforms
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model.dino import DinoWSSS
-from utils.dataset import (
-    val_transform_tta,
-    cmap,
-    DATASET_YEAR_DICT,
-)
+from utils.dataset import MEAN, STD, cmap
 from utils.metrics import test_time_augmentation_inference
 
-DINOV3_LOCATION = '/u501/j234li/wsss/model/dinov3'
+DINOV3_LOCATION = '/u501/j234li/reg_loss/model/dinov3'
 sys.path.append(DINOV3_LOCATION)
 
 
 class VOCTestImageDataset(torch.utils.data.Dataset):
     """VOC test split: images only (no masks). Returns (PIL_image, (H, W), image_name)."""
 
-    def __init__(self, root, year='2012', image_set='test'):
-        self.root = os.path.expanduser(root)
-        base_dir = DATASET_YEAR_DICT[year]['base_dir']
-        voc_root = os.path.join(self.root, base_dir)
+    def __init__(self, root, image_set='test'):
+        voc_root = os.path.join(os.path.expanduser(root), 'VOCdevkit', 'VOC2012')
         image_dir = os.path.join(voc_root, 'JPEGImages')
         split_f = os.path.join(voc_root, 'ImageSets', 'Segmentation', image_set.rstrip('\n') + '.txt')
         with open(split_f) as f:
@@ -49,23 +44,26 @@ class VOCTestImageDataset(torch.utils.data.Dataset):
 
 
 class TestTTADataset(torch.utils.data.Dataset):
-    """Wraps VOCTestImageDataset with val_transform_tta. Returns (tensor, (H, W), name)."""
+    """Wraps VOCTestImageDataset with the TTA normalization. Returns (tensor, (H, W), name)."""
 
     def __init__(self, test_dataset):
         self.dataset = test_dataset
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=MEAN, std=STD),
+        ])
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
         image, size, name = self.dataset[idx]
-        x = val_transform_tta(image)
+        x = self.transform(image)
         return x, size, name
 
 
 def load_config(config_path='config.yaml'):
-    with open(config_path) as f:
-        return yaml.safe_load(f)
+    return OmegaConf.load(config_path)
 
 
 def main():
@@ -86,8 +84,7 @@ def main():
 
     # VOC test dataset (images only)
     root = config['dataset']['root']
-    year = '2012'
-    test_dataset = VOCTestImageDataset(root=root, year=year, image_set='test')
+    test_dataset = VOCTestImageDataset(root=root, image_set='test')
     dataset = TestTTADataset(test_dataset)
 
     model = DinoWSSS(
