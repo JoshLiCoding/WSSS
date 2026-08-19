@@ -16,6 +16,7 @@ __pycache__/
 
 # Logs
 *.log
+*.out
 
 # Environment
 .env

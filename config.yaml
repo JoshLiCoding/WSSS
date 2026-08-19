@@ -26,7 +26,7 @@ training:
   weight_decay: 0.0001
   momentum: 0.9
   ignore_index: 255
-  validation_interval: 2
+  validation_interval: 1
   train_only: false
   num_workers: 4
 
@@ -38,11 +38,11 @@ pseudolabel:
 # Loss Parameters
 loss:
   unary_method: 'cce'     # 'cce' (collision cross-entropy), 'kldiv'
-  contour_method: 'fastsam'    # 'sam', 'fastsam', 'slic', 'gt', 'color_diff'
-  potts_weight: 1000.0       # uniform Potts weight
-  dilation_size: 5        # max-filter size widening the contours before they become affinities
-  per_class_weights: false # when on, the uniform weight is replaced by the table below
-  class_weights_file: 'class_weights/${dataset.dataset_name}.yaml'
+  contour_method: 'sam'    # 'sam', 'fastsam', 'slic', 'gt', 'color_diff'
+  potts_weight: 0.0       # uniform Potts weight
+  dilation_size: 3        # max-filter size widening the contours before they become affinities
+  per_class_weights: true # when on, the uniform weight is replaced by the table below
+  class_weights_file: 'class_weights/${dataset.dataset_name}_new.yaml'
 
 # Dataset Parameters
 dataset:
@@ -54,12 +54,12 @@ dataset:
 directories:
   output: 'outputs'
   checkpoints: 'checkpoints'
-  visualizations: 'vis_${training.num_epochs}epochs_w=1000_fastsam'
+  visualizations: 'vis_${training.num_epochs}epochs_w=mixed_curbest'
 
 # File Paths
 paths:
   model_checkpoint: 'outputs/checkpoints/10epochs_kl.pt'
-  model: '${directories.output}/${directories.checkpoints}/${training.num_epochs}epochs_w=1000_fastsam.pt'
+  model: '${directories.output}/${directories.checkpoints}/${training.num_epochs}epochs_w=mixed_curbest.pt'
   sam_checkpoint: 'sam_checkpoint/sam_vit_b_01ec64.pth'
 
 # Visualization Parameters

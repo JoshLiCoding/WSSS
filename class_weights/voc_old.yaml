@@ -1,7 +1,7 @@
 # Per-class Potts weights for PASCAL VOC.
 # One entry per class index; the comment records the best mIoU that class reached.
 weights:
-  - 0.0     # 0  background   (0.8929)
+  - 0.0     # 0  background
   - 1000.0  # 1  aeroplane    (0.8335)
   - 0.0     # 2  bicycle      (0.4772)
   - 700.0   # 3  bird         (0.8787)
