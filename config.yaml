@@ -30,6 +30,12 @@ training:
   train_only: false
   num_workers: 4
 
+# Learning Rate Scheduler
+scheduler:
+  use_scheduler: false   # when on, wrap the optimizer in CosineAnnealingLR
+  eta_min: 0.0           # lr floor at the end of the cosine cycle
+  step_per: 'iteration'      # 'epoch' (T_max = num_epochs) or 'iteration' (T_max = num_epochs * len(train_loader))
+
 # Pseudo-label Parameters
 pseudolabel:
   temperature: 0.05  # softmax temperature on the dino.txt patch similarities
@@ -38,9 +44,9 @@ pseudolabel:
 # Loss Parameters
 loss:
   unary_method: 'cce'     # 'cce' (collision cross-entropy), 'kldiv'
-  contour_method: 'sam'    # 'sam', 'fastsam', 'slic', 'gt', 'color_diff'
+  contour_method: 'fastsam'    # 'sam', 'fastsam', 'slic', 'gt', 'color_diff'
   potts_weight: 0.0       # uniform Potts weight
-  dilation_size: 3        # max-filter size widening the contours before they become affinities
+  dilation_size: 5        # max-filter size widening the contours before they become affinities
   per_class_weights: true # when on, the uniform weight is replaced by the table below
   class_weights_file: 'class_weights/${dataset.dataset_name}_new.yaml'
 
@@ -48,18 +54,18 @@ loss:
 dataset:
   dataset_name: 'voc'
   root: './datasets'
-  resize_size: 448
+  resize_size: 448 
 
 # Directory Structure
 directories:
   output: 'outputs'
   checkpoints: 'checkpoints'
-  visualizations: 'vis_${training.num_epochs}epochs_w=mixed_curbest'
+  visualizations: 'vis_${training.num_epochs}epochs_w=mixed_curbest_fastsam_dl=5'
 
 # File Paths
 paths:
   model_checkpoint: 'outputs/checkpoints/10epochs_kl.pt'
-  model: '${directories.output}/${directories.checkpoints}/${training.num_epochs}epochs_w=mixed_curbest.pt'
+  model: '${directories.output}/${directories.checkpoints}/${training.num_epochs}epochs_w=mixed_curbest_fastsam_dl=5.pt'
   sam_checkpoint: 'sam_checkpoint/sam_vit_b_01ec64.pth'
 
 # Visualization Parameters

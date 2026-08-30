@@ -125,6 +125,19 @@ def main(cfg: DictConfig) -> None:
         weight_decay=cfg.training.weight_decay
     )
 
+    # Optional cosine-annealed learning rate
+    STEP_PER = cfg.scheduler.step_per
+    if cfg.scheduler.use_scheduler:
+        if STEP_PER not in ('epoch', 'iteration'):
+            raise ValueError(f"scheduler.step_per must be 'epoch' or 'iteration', got '{STEP_PER}'")
+        T_max = cfg.training.num_epochs if STEP_PER == 'epoch' else cfg.training.num_epochs * len(train_loader)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=T_max, eta_min=cfg.scheduler.eta_min
+        )
+        print(f"Using CosineAnnealingLR (T_max={T_max} {STEP_PER}s, eta_min={cfg.scheduler.eta_min})")
+    else:
+        scheduler = None
+
     model_checkpoint = cfg.paths.model_checkpoint
     if os.path.exists(model_checkpoint):
         print(f"Loading checkpoint from {model_checkpoint}...")
@@ -192,6 +205,8 @@ def main(cfg: DictConfig) -> None:
 
             total_loss.backward()
             optimizer.step()
+            if scheduler is not None and STEP_PER == 'iteration':
+                scheduler.step()
 
             running_total_loss += total_loss.item()
             running_unary_loss += unary_loss.item()
@@ -221,8 +236,12 @@ def main(cfg: DictConfig) -> None:
             "epoch": epoch + 1,
             "train/total_loss": epoch_total_losses[-1],
             "train/unary_loss": epoch_unary_losses[-1],
-            "train/pairwise_loss": epoch_pairwise_losses[-1]
+            "train/pairwise_loss": epoch_pairwise_losses[-1],
+            "train/lr": optimizer.param_groups[0]['lr']
         })
+
+        if scheduler is not None and STEP_PER == 'epoch':
+            scheduler.step()
 
         # validation
         if (epoch + 1) % cfg.training.validation_interval == 0 or epoch == NUM_EPOCHS - 1:
